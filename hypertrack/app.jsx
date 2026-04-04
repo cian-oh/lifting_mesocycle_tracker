@@ -1220,6 +1220,11 @@ function App() {
     setScreen("support");
   }, []);
 
+  const openContactScreen = useCallback(() => {
+    setAccountOpen(false);
+    setScreen("contact");
+  }, []);
+
   const closeSupportScreen = useCallback(() => {
     setSupportSuccess(false);
     setScreen(meso ? "home" : "welcome");
@@ -1375,6 +1380,8 @@ function App() {
           hasMeso={Boolean(meso)}
           cloudUser={cloudUser}
           onOpenAccount={() => setAccountOpen(true)}
+          onOpenSupport={openSupportScreen}
+          onOpenContact={openContactScreen}
         />
       )}
       {screen === "setup" && (
@@ -1398,6 +1405,7 @@ function App() {
           onOpenArchive={() => setArchiveOpen(true)}
           onManageExercises={() => setManageExercisesOpen(true)}
           onOpenSupport={openSupportScreen}
+          onOpenContact={openContactScreen}
         />
       )}
       {screen === "support" && cloudUser && (
@@ -1407,6 +1415,13 @@ function App() {
           initialSuccess={supportSuccess}
           onClearSuccess={() => setSupportSuccess(false)}
           onBack={closeSupportScreen}
+          onOpenContact={openContactScreen}
+        />
+      )}
+      {screen === "contact" && cloudUser && (
+        <ContactFeedbackScreen
+          onBack={() => setScreen(meso ? "home" : "welcome")}
+          onOpenSupport={openSupportScreen}
         />
       )}
       {screen === "session" && meso && sessionState && (
@@ -1498,6 +1513,7 @@ function App() {
           onSignOut={handleSignOut}
           onRefresh={loadUserMesos}
           onOpenSupport={openSupportScreen}
+          onOpenContact={openContactScreen}
           onOpenArchive={() => {
             setAccountOpen(false);
             setArchiveOpen(true);
@@ -1527,6 +1543,8 @@ function WelcomeScreen({
   hasMeso,
   cloudUser,
   onOpenAccount,
+  onOpenSupport,
+  onOpenContact,
 }) {
   const introSteps = [
     {
@@ -1620,6 +1638,26 @@ function WelcomeScreen({
             </div>
           ))}
         </div>
+      </div>
+      <div className="grid-2">
+        <button className="card action-panel stack" onClick={onOpenSupport}>
+          <div className="eyebrow">Support HyperPhases</div>
+          <div className="display" style={{ fontSize: 30, lineHeight: 0.94 }}>
+            Fund The Platform
+          </div>
+          <div className="tiny muted">
+            Support development, hosting, and future improvements with a one-time contribution.
+          </div>
+        </button>
+        <button className="card action-panel stack" onClick={onOpenContact}>
+          <div className="eyebrow">Contact & Feedback</div>
+          <div className="display" style={{ fontSize: 30, lineHeight: 0.94 }}>
+            Reach The Team
+          </div>
+          <div className="tiny muted">
+            Report bugs, share product ideas, or get help with account and tracking issues.
+          </div>
+        </button>
       </div>
     </div>
   );
@@ -2393,6 +2431,7 @@ function HomeScreen({
   onOpenArchive,
   onManageExercises,
   onOpenSupport,
+  onOpenContact,
 }) {
   const daySlots = getMesoDaySlots(meso);
   const activeMuscles = getActiveMusclesFromSlots(daySlots);
@@ -2416,7 +2455,13 @@ function HomeScreen({
                 RIR-led progression and adaptive volume for hypertrophy mesocycles
               </div>
             </div>
-            <div className="row">
+            <div className="header-actions">
+              <button className="btn-ghost" onClick={onOpenSupport}>
+                Support
+              </button>
+              <button className="btn-ghost" onClick={onOpenContact}>
+                Contact
+              </button>
               <button className="btn-ghost" onClick={onOpenArchive}>
                 Archive
               </button>
@@ -2470,6 +2515,29 @@ function HomeScreen({
             <div className="progress-track">
               <div className="progress-fill" style={{ width: `${progress}%` }} />
             </div>
+          </div>
+
+          <div className="grid-2">
+            <button className="card action-panel stack" onClick={onOpenSupport}>
+              <div className="eyebrow">Support HyperPhases</div>
+              <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+                Fund The Platform
+              </div>
+              <div className="small muted">
+                Support development, hosting, and the next round of improvements with a one-time contribution.
+              </div>
+              <div className="mono tiny gold">Embedded checkout in one tap</div>
+            </button>
+            <button className="card action-panel stack" onClick={onOpenContact}>
+              <div className="eyebrow">Contact & Feedback</div>
+              <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+                Report Or Reach Out
+              </div>
+              <div className="small muted">
+                Send bug reports, feature ideas, account questions, or training-log issues directly to the team.
+              </div>
+              <div className="mono tiny gold">feedback@hyperphases.com</div>
+            </button>
           </div>
 
           <div className="grid-2">
@@ -2618,8 +2686,6 @@ function HomeScreen({
               );
             })}
           </div>
-
-          <SupportCard compact onOpenSupport={onOpenSupport} />
         </>
       )}
     </div>
@@ -2641,6 +2707,7 @@ function AccountSheet({
   onSignOut,
   onRefresh,
   onOpenSupport,
+  onOpenContact,
   onOpenArchive,
 }) {
   return (
@@ -2674,7 +2741,23 @@ function AccountSheet({
           onOpenArchive={onOpenArchive}
           archivedCount={archivedCount}
         />
-        <SupportCard onOpenSupport={onOpenSupport} />
+        <div className="card stack analytics-card">
+          <div className="eyebrow">Help & Support</div>
+          <div className="display" style={{ fontSize: 36, lineHeight: 0.92 }}>
+            Platform Access
+          </div>
+          <div className="small">
+            Support HyperPhases or contact the team directly without digging through account settings.
+          </div>
+          <div className="grid-2">
+            <button className="btn-primary" onClick={onOpenSupport}>
+              Support
+            </button>
+            <button className="btn-ghost" onClick={onOpenContact}>
+              Contact
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2852,44 +2935,13 @@ function CloudSyncCard({
   );
 }
 
-function SupportCard({ compact = false, onOpenSupport }) {
-  return (
-    <div className="card stack analytics-card">
-      <div className="eyebrow">Support</div>
-      <div className="display" style={{ fontSize: compact ? 34 : 38, lineHeight: 0.92 }}>
-        Support HyperPhases
-      </div>
-      <div className="small">
-        Contributions help fund product development, hosting, and ongoing iteration. For bugs, product feedback, or account issues, contact the HyperPhases team directly.
-      </div>
-      {onOpenSupport && (
-        <button className="btn-primary" onClick={onOpenSupport}>
-          Open Support Page
-        </button>
-      )}
-      <div className="label tiny gold">Feedback & Contact</div>
-      <div className="small">
-        For bug reports, product feedback, account issues, or training-log problems, contact the HyperPhases team directly.
-      </div>
-      <div className="inset stack" style={{ padding: 14, gap: 8 }}>
-        <div className="mono small">feedback@hyperphases.com</div>
-        <div className="tiny muted">
-          Include the issue, device/browser, and any steps to reproduce if you are reporting a bug.
-        </div>
-      </div>
-      <a className="btn-ghost support-link" href="mailto:feedback@hyperphases.com?subject=HyperPhases%20Feedback">
-        Email Support
-      </a>
-    </div>
-  );
-}
-
 function SupportCheckoutScreen({
   cloudUser,
   supabaseClient,
   initialSuccess,
   onClearSuccess,
   onBack,
+  onOpenContact,
 }) {
   const [selectedAmount, setSelectedAmount] = useState(DEFAULT_SUPPORT_AMOUNT);
   const [customAmount, setCustomAmount] = useState("");
@@ -3052,6 +3104,12 @@ function SupportCheckoutScreen({
             This checkout will be prefilled for <span className="mono">{cloudUser?.email}</span>.
           </div>
         </div>
+        <div className="title-row">
+          <div className="tiny muted">Need help instead of making a payment?</div>
+          <button className="btn-ghost" onClick={onOpenContact}>
+            Contact Team
+          </button>
+        </div>
       </div>
 
       {checkoutMode === "success" ? (
@@ -3163,6 +3221,97 @@ function SupportCheckoutScreen({
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function ContactFeedbackScreen({ onBack, onOpenSupport }) {
+  const feedbackMailto =
+    "mailto:feedback@hyperphases.com?subject=HyperPhases%20Feedback";
+
+  return (
+    <div className="stack">
+      <div className="sticky">
+        <div className="card header-card">
+          <div className="space-between">
+            <div>
+              <div className="display" style={{ fontSize: 42, lineHeight: 0.9 }}>
+                Contact <span className="accent">HyperPhases</span>
+              </div>
+              <div className="mono tiny gold">
+                Feedback, bug reports, account help, and training-log issues.
+              </div>
+            </div>
+            <button className="btn-ghost" onClick={onBack}>
+              Back
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card stack analytics-card">
+        <div className="eyebrow">Contact & Feedback</div>
+        <div className="display" style={{ fontSize: 46, lineHeight: 0.92 }}>
+          Reach The Team
+        </div>
+        <div className="small">
+          HyperPhases uses a direct email support model. Send product feedback, bug reports, account questions, or logging issues to the team and include enough detail for a fast response.
+        </div>
+        <div className="inset stack contact-points" style={{ padding: 16 }}>
+          <div className="label tiny gold">primary email</div>
+          <div className="mono" style={{ fontSize: 14 }}>feedback@hyperphases.com</div>
+          <div className="tiny muted">
+            For bugs, include device, browser, what you expected, and the steps that caused the issue.
+          </div>
+        </div>
+        <div className="grid-2">
+          <a className="btn-primary support-link" href={feedbackMailto}>
+            Email Feedback
+          </a>
+          <button className="btn-ghost" onClick={onOpenSupport}>
+            Support HyperPhases
+          </button>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="card action-panel stack">
+          <div className="eyebrow">Bug Report</div>
+          <div className="display" style={{ fontSize: 30, lineHeight: 0.94 }}>
+            Something Broke
+          </div>
+          <div className="small muted">
+            Report app errors, broken flows, layout issues, or incorrect training-state behavior.
+          </div>
+        </div>
+        <div className="card action-panel stack">
+          <div className="eyebrow">Product Feedback</div>
+          <div className="display" style={{ fontSize: 30, lineHeight: 0.94 }}>
+            Improve The Product
+          </div>
+          <div className="small muted">
+            Share ideas for better planning, analytics, logging, or recovery guidance.
+          </div>
+        </div>
+        <div className="card action-panel stack">
+          <div className="eyebrow">Account Help</div>
+          <div className="display" style={{ fontSize: 30, lineHeight: 0.94 }}>
+            Access Or Sign-In
+          </div>
+          <div className="small muted">
+            Use this path for password reset issues, authentication problems, or account confusion.
+          </div>
+        </div>
+        <div className="card action-panel stack">
+          <div className="eyebrow">Training Log</div>
+          <div className="display" style={{ fontSize: 30, lineHeight: 0.94 }}>
+            Data Or Session Issue
+          </div>
+          <div className="small muted">
+            Report incorrect mesocycle state, session-save problems, history issues, or missing progression data.
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

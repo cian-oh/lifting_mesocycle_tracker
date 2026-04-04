@@ -445,6 +445,35 @@
         padding: 15px 16px;
       }
 
+      .header-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .action-panel {
+        width: 100%;
+        border: 1px solid var(--border);
+        text-align: left;
+        cursor: pointer;
+        transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+      }
+
+      button.action-panel {
+        color: inherit;
+      }
+
+      .action-panel:hover {
+        transform: translateY(-1px);
+        border-color: rgba(15, 159, 110, 0.2);
+        box-shadow: 0 18px 34px rgba(15, 23, 42, 0.08);
+      }
+
+      .contact-points .mono {
+        word-break: break-word;
+      }
+
       .title-row,
       .row,
       .space-between {
@@ -730,6 +759,10 @@
         .insight-grid {
           grid-template-columns: 1fr;
           display: grid;
+        }
+
+        .header-actions {
+          justify-content: flex-start;
         }
 
         .session-grid {
