@@ -33,6 +33,7 @@ HyperPhases supports:
 - exercise selection by muscle group with built-in recommendations
 - custom exercise entry when a movement is missing from the suggested list
 - bodyweight exercise options even when bodyweight is not the only equipment selected
+- account-level bodyweight profile used to prefill bodyweight movements like pull-ups and dips
 - load unit selection in `kg` or `lb`
 - per-exercise weight increment configuration
 - later in-session increment edits when you finally know what the gym setup allows
@@ -40,7 +41,7 @@ HyperPhases supports:
 - set-by-set workout logging
 - per-exercise history modal with prior weeks and logged weights
 - inline muscle feedback collection
-- post-creation exercise removal for future sessions
+- post-creation exercise add/remove management for future sessions
 - automatic weekly volume adjustment
 - automatic week advancement after all configured split days are logged
 - archived mesocycle folder for previous blocks

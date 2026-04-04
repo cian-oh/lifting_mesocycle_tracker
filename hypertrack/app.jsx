@@ -1463,6 +1463,41 @@ function App() {
     [meso, persistMeso]
   );
 
+  const handleAddExercise = useCallback(
+    async (muscle, exerciseName) => {
+      if (!meso) return false;
+      const normalized = normalizeExerciseName(exerciseName);
+      if (!normalized) return false;
+      const existing = meso.exercises[muscle] || [];
+      if (existing.length >= 3) {
+        setToast("Exercise cap reached");
+        return false;
+      }
+      const canonical =
+        getAllExerciseOptions(muscle).find((item) => item.toLowerCase() === normalized.toLowerCase()) ||
+        normalized;
+      if (existing.some((item) => item.toLowerCase() === canonical.toLowerCase())) {
+        setToast("Exercise already in plan");
+        return false;
+      }
+      const nextMeso = {
+        ...meso,
+        exercises: {
+          ...meso.exercises,
+          [muscle]: [...existing, canonical],
+        },
+        increments: {
+          ...meso.increments,
+          [canonical]: meso.increments[canonical] || DEFAULT_INCREMENT,
+        },
+      };
+      await persistMeso(nextMeso);
+      setToast("Exercise added to future sessions");
+      return true;
+    },
+    [meso, persistMeso]
+  );
+
   return (
     <div className="app-shell">
       {screen === "loading" && <LoadingScreen />}
@@ -1583,6 +1618,7 @@ function App() {
         <ManageExercisesSheet
           meso={meso}
           onClose={() => setManageExercisesOpen(false)}
+          onAdd={handleAddExercise}
           onRemove={handleRemoveExercise}
         />
       )}
@@ -3967,8 +4003,23 @@ function IncrementModal({ current, exerciseName, unit, onClose, onSave }) {
   );
 }
 
-function ManageExercisesSheet({ meso, onClose, onRemove }) {
+function ManageExercisesSheet({ meso, onClose, onAdd, onRemove }) {
   const activeMuscles = getActiveMusclesFromSlots(getMesoDaySlots(meso));
+  const [drafts, setDrafts] = useState({});
+
+  const updateDraft = (muscle, value) => {
+    setDrafts((current) => ({ ...current, [muscle]: value }));
+  };
+
+  const handleAdd = async (muscle) => {
+    const draft = normalizeExerciseName(drafts[muscle]);
+    if (!draft) return;
+    const added = await onAdd(muscle, draft);
+    if (added) {
+      setDrafts((current) => ({ ...current, [muscle]: "" }));
+    }
+  };
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="sheet stack" onClick={(event) => event.stopPropagation()}>
@@ -3984,13 +4035,37 @@ function ManageExercisesSheet({ meso, onClose, onRemove }) {
           </button>
         </div>
         <div className="small muted">
-          Remove movements from future planning while preserving the history you already logged.
+          Add or remove movements for future sessions. Existing logs stay intact, and exercises added mid-block start fresh from their next appearance in the mesocycle.
         </div>
         {activeMuscles.map((muscle) => (
           <div key={muscle} className="card stack">
             <div className="title-row">
               <div className="display" style={{ fontSize: 28 }}>{muscle}</div>
-              <div className="mono tiny gold">{(meso.exercises[muscle] || []).length} active</div>
+              <div className="mono tiny gold">{(meso.exercises[muscle] || []).length}/3 active</div>
+            </div>
+            <div className="inset stack" style={{ padding: 12 }}>
+              <div className="label tiny gold">add exercise</div>
+              <input
+                list={`manage-library-${muscle}`}
+                value={drafts[muscle] || ""}
+                onChange={(event) => updateDraft(muscle, event.target.value)}
+                placeholder={`Type or choose a ${muscle} exercise`}
+              />
+              <datalist id={`manage-library-${muscle}`}>
+                {getAllExerciseOptions(muscle).map((exercise) => (
+                  <option key={`${muscle}-manage-${exercise}`} value={exercise} />
+                ))}
+              </datalist>
+              <div className="title-row">
+                <div className="tiny muted">Choose from the library or type your own movement.</div>
+                <button
+                  className="btn-ghost"
+                  disabled={(meso.exercises[muscle] || []).length >= 3 || !normalizeExerciseName(drafts[muscle])}
+                  onClick={() => handleAdd(muscle)}
+                >
+                  Add
+                </button>
+              </div>
             </div>
             {(meso.exercises[muscle] || []).length ? (
               (meso.exercises[muscle] || []).map((exercise) => (
