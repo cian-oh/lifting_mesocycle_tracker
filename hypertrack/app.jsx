@@ -141,7 +141,7 @@ const FEEDBACK_OPTIONS = {
   ],
 };
 const STEP_LABELS = {
-  fresh: [0, 1, 2, 3],
+  fresh: [0, 1, 2],
   resume: [0, 1, 2, 3],
 };
 
@@ -369,42 +369,9 @@ function getAvailableExercises(muscle, equipment) {
   return list;
 }
 
-function getFallbackExercisePlan(equipment) {
+function getRecommendedExercisePlan(equipment) {
   return Object.fromEntries(
     MUSCLES.map((muscle) => [muscle, getAvailableExercises(muscle, equipment).slice(0, 2)])
-  );
-}
-
-async function suggestExercisesWithAnthropic(equipment) {
-  const apiKey = window.HYPERTRACK_ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error("No Anthropic key configured in browser.");
-  }
-  const prompt = `You are an expert hypertrophy coach. A lifter has: ${equipment.join(
-    ", "
-  )}. For each muscle group, suggest exactly 2 exercises optimised for hypertrophy using ONLY available equipment. Muscles: Chest, Back, Shoulders, Biceps, Triceps, Quads, Hamstrings, Glutes, Calves, Rear Delts. Return ONLY valid JSON, no markdown, no preamble: {"Chest":["ex1","ex2"],"Back":["ex1","ex2"],"Shoulders":["ex1","ex2"],"Biceps":["ex1","ex2"],"Triceps":["ex1","ex2"],"Quads":["ex1","ex2"],"Hamstrings":["ex1","ex2"],"Glutes":["ex1","ex2"],"Calves":["ex1","ex2"],"Rear Delts":["ex1","ex2"]}`;
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`Anthropic error ${response.status}`);
-  }
-  const payload = await response.json();
-  const text = payload?.content?.map((part) => part.text || "").join("") || "";
-  const parsed = JSON.parse(text);
-  return Object.fromEntries(
-    MUSCLES.map((muscle) => [muscle, (parsed[muscle] || []).slice(0, 2)])
   );
 }
 
@@ -1267,10 +1234,13 @@ function SetupScreen({ onComplete, onCancel }) {
   const [step, setStep] = useState(0);
   const [equipment, setEquipment] = useState(DEFAULT_EQUIPMENT);
   const [weeks, setWeeks] = useState(6);
-  const [loading, setLoading] = useState(false);
-  const [exercises, setExercises] = useState(() => getFallbackExercisePlan(DEFAULT_EQUIPMENT));
+  const [exercises, setExercises] = useState(() => getRecommendedExercisePlan(DEFAULT_EQUIPMENT));
   const [incrementsSetup, setIncrementsSetup] = useState(() =>
-    Object.fromEntries(Object.values(getFallbackExercisePlan(DEFAULT_EQUIPMENT)).flat().map((exercise) => [exercise, DEFAULT_INCREMENT]))
+    Object.fromEntries(
+      Object.values(getRecommendedExercisePlan(DEFAULT_EQUIPMENT))
+        .flat()
+        .map((exercise) => [exercise, DEFAULT_INCREMENT])
+    )
   );
   const [weeklyVol, setWeeklyVol] = useState(
     Object.fromEntries(MUSCLES.map((muscle) => [muscle, MEV_MRV[muscle][0]]))
@@ -1285,7 +1255,20 @@ function SetupScreen({ onComplete, onCancel }) {
   const normalizedSplitDays = normalizeDaySlots(splitDays);
   const activeMuscles = getActiveMusclesFromSlots(normalizedSplitDays);
 
-  const visualStep = mode === "fresh" ? clamp(step, 0, 3) : step === 0 ? 0 : step === 2 ? 1 : step === 3 ? 2 : 3;
+  const visualStep =
+    mode === "fresh"
+      ? step === 0
+        ? 0
+        : step === 2
+          ? 1
+          : 2
+      : step === 0
+        ? 0
+        : step === 2
+          ? 1
+          : step === 3
+            ? 2
+            : 3;
 
   useEffect(() => {
     setResumeWeek((prev) => clamp(prev, 1, weeks));
@@ -1338,30 +1321,15 @@ function SetupScreen({ onComplete, onCancel }) {
     setSplitDays((current) => (current.length <= 1 ? current : current.filter((slot) => slot.id !== slotId)));
   };
 
-  const triggerExerciseSelection = async () => {
-    setLoading(true);
-    setStep(1);
-    try {
-      const suggested = await suggestExercisesWithAnthropic(equipment);
-      const { normalizedExercises, normalizedIncrements } = normalizeExercisesAndIncrements(
-        suggested,
-        incrementsSetup
-      );
-      setExercises(normalizedExercises);
-      setIncrementsSetup(normalizedIncrements);
-    } catch (error) {
-      const fallback = getFallbackExercisePlan(equipment);
-      const { normalizedExercises, normalizedIncrements } = normalizeExercisesAndIncrements(
-        fallback,
-        incrementsSetup
-      );
-      setExercises(normalizedExercises);
-      setIncrementsSetup(normalizedIncrements);
-      console.warn("Exercise suggestion fallback in use.", error);
-    } finally {
-      setLoading(false);
-      setStep(2);
-    }
+  const buildExerciseSelection = () => {
+    const recommended = getRecommendedExercisePlan(equipment);
+    const { normalizedExercises, normalizedIncrements } = normalizeExercisesAndIncrements(
+      recommended,
+      incrementsSetup
+    );
+    setExercises(normalizedExercises);
+    setIncrementsSetup(normalizedIncrements);
+    setStep(2);
   };
 
   const toggleEquipment = (item) => {
@@ -1610,25 +1578,9 @@ function SetupScreen({ onComplete, onCancel }) {
           </div>
         </div>
       )}
-      <button className="btn-primary" onClick={triggerExerciseSelection}>
-        AI Select Exercises
+      <button className="btn-primary" onClick={buildExerciseSelection}>
+        Build Exercise Plan
       </button>
-    </div>
-  );
-
-  const renderLoading = () => (
-    <div className="card stack">
-      <div className="eyebrow">// AI loading</div>
-      <div className="display" style={{ fontSize: 50 }}>
-        Selecting
-      </div>
-      <div className="small">AI selecting exercises...</div>
-      <div className="progress-track">
-        <div className="progress-fill" style={{ width: loading ? "72%" : "100%" }} />
-      </div>
-      <div className="tiny muted">
-        Falls back automatically to the built-in hypertrophy exercise library if the AI call is unavailable.
-      </div>
     </div>
   );
 
@@ -1649,8 +1601,8 @@ function SetupScreen({ onComplete, onCancel }) {
         {renderStepDots()}
         <div className="tiny muted">
           {mode === "fresh"
-            ? "Select up to 3 exercises per muscle group."
-            : "Match what you’ve been doing. Select up to 3 exercises per muscle group."}
+            ? "Start from equipment-matched recommendations, then keep up to 3 exercises per muscle group."
+            : "Match what you’ve been doing. Start from equipment-matched recommendations, then keep up to 3 exercises per muscle group."}
         </div>
       </div>
       {activeMuscles.map((muscle) => {
@@ -1966,7 +1918,6 @@ function SetupScreen({ onComplete, onCancel }) {
     <div className="stack">
       {mode === "choose" && renderChooseMode()}
       {mode !== "choose" && step === 0 && renderEquipmentWeeks()}
-      {mode !== "choose" && step === 1 && renderLoading()}
       {mode !== "choose" && step === 2 && renderExerciseReview()}
       {mode === "fresh" && step === 3 && renderVolumeStep()}
       {mode === "resume" && step === 3 && renderResumeWeights()}
