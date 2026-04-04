@@ -3,6 +3,11 @@ const { useState, useEffect, useCallback } = React;
 const STORAGE_KEY = "hypertrack_cian_v1";
 const SUPABASE_CONFIG_KEY = "hypertrack_cian_supabase_v1";
 const SUPABASE_TABLE = "hypertrack_mesos";
+const SUPPORT_FUNCTION_NAME = "create-support-checkout-session";
+const SUPPORT_PRESET_AMOUNTS = [5, 10, 20];
+const DEFAULT_SUPPORT_AMOUNT = 10;
+const MIN_SUPPORT_AMOUNT_EUR = 1;
+const MAX_SUPPORT_AMOUNT_EUR = 500;
 const DEFAULT_INCREMENT = 2.5;
 const DEFAULT_UNIT = "kg";
 const DEPLOY_CONFIG = window.__HYPERTRACK_CONFIG__ || {};
@@ -834,6 +839,69 @@ function getMesoSummaryStats(meso) {
   };
 }
 
+function formatEuro(amount) {
+  if (amount == null || Number.isNaN(Number(amount))) return "";
+  return new Intl.NumberFormat("en-IE", {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: Number.isInteger(Number(amount)) ? 0 : 2,
+  }).format(Number(amount));
+}
+
+function normalizeSupportAmount(amount) {
+  const value = Number(amount);
+  if (Number.isNaN(value)) return null;
+  const rounded = Math.round(value * 100) / 100;
+  if (rounded < MIN_SUPPORT_AMOUNT_EUR || rounded > MAX_SUPPORT_AMOUNT_EUR) return null;
+  return rounded;
+}
+
+async function getStripeClient() {
+  const key = DEPLOY_CONFIG.stripePublishableKey || "";
+  if (!key || !window.Stripe) return null;
+  return window.Stripe(key);
+}
+
+async function createSupportCheckoutSession({ supabaseClient, amount, email }) {
+  const normalized = normalizeSupportAmount(amount);
+  if (!normalized) {
+    throw new Error("Enter a valid support amount.");
+  }
+  const baseUrl = DEPLOY_CONFIG.supabaseUrl || "";
+  const anonKey = DEPLOY_CONFIG.supabaseAnonKey || "";
+  if (!baseUrl || !anonKey) {
+    throw new Error("Supabase configuration is incomplete.");
+  }
+  const headers = {
+    "content-type": "application/json",
+    apikey: anonKey,
+  };
+  try {
+    const session = await supabaseClient?.auth?.getSession?.();
+    const accessToken = session?.data?.session?.access_token;
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+  } catch (error) {
+    console.error(error);
+  }
+  const response = await fetch(`${baseUrl}/functions/v1/${SUPPORT_FUNCTION_NAME}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      amount: normalized,
+      currency: "eur",
+      email,
+      returnUrl: `${window.location.origin}${window.location.pathname}?support=success`,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error || "Unable to start checkout.");
+  }
+  return payload;
+}
+
 function App() {
   const [screen, setScreen] = useState("loading");
   const [meso, setMeso] = useState(null);
@@ -853,12 +921,34 @@ function App() {
   const [authReady, setAuthReady] = useState(false);
   const [cloudStatus, setCloudStatus] = useState("Sign in to use HyperPhases.");
   const [cloudBusy, setCloudBusy] = useState(false);
+  const [supportSuccess, setSupportSuccess] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("support") === "success";
+    } catch (error) {
+      console.error(error);
+      return false;
+    }
+  });
 
   useEffect(() => {
     if (!toast) return undefined;
     const timer = window.setTimeout(() => setToast(null), 2400);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (!supportSuccess) return undefined;
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("support") === "success") {
+        url.searchParams.delete("support");
+        window.history.replaceState({}, "", url.toString());
+      }
+    } catch (error) {
+      console.error(error);
+    }
+    return undefined;
+  }, [supportSuccess]);
 
   useEffect(() => {
     setAuthReady(false);
@@ -924,6 +1014,7 @@ function App() {
       );
       setScreen((current) => {
         if (current === "setup" || current === "session") return current;
+        if (supportSuccess) return "support";
         return activeMeso ? "home" : "welcome";
       });
     } catch (error) {
@@ -933,7 +1024,7 @@ function App() {
     } finally {
       setCloudBusy(false);
     }
-  }, [cloudUser, supabaseClient]);
+  }, [cloudUser, supabaseClient, supportSuccess]);
 
   useEffect(() => {
     if (!authReady) return;
@@ -1124,6 +1215,16 @@ function App() {
     setScreen("setup");
   }, []);
 
+  const openSupportScreen = useCallback(() => {
+    setAccountOpen(false);
+    setScreen("support");
+  }, []);
+
+  const closeSupportScreen = useCallback(() => {
+    setSupportSuccess(false);
+    setScreen(meso ? "home" : "welcome");
+  }, [meso]);
+
   const startSession = useCallback(
     (daySlotId) => {
       if (!meso) return;
@@ -1296,6 +1397,16 @@ function App() {
           onOpenAccount={() => setAccountOpen(true)}
           onOpenArchive={() => setArchiveOpen(true)}
           onManageExercises={() => setManageExercisesOpen(true)}
+          onOpenSupport={openSupportScreen}
+        />
+      )}
+      {screen === "support" && cloudUser && (
+        <SupportCheckoutScreen
+          cloudUser={cloudUser}
+          supabaseClient={supabaseClient}
+          initialSuccess={supportSuccess}
+          onClearSuccess={() => setSupportSuccess(false)}
+          onBack={closeSupportScreen}
         />
       )}
       {screen === "session" && meso && sessionState && (
@@ -1386,6 +1497,7 @@ function App() {
           onForgotPassword={handleForgotPassword}
           onSignOut={handleSignOut}
           onRefresh={loadUserMesos}
+          onOpenSupport={openSupportScreen}
           onOpenArchive={() => {
             setAccountOpen(false);
             setArchiveOpen(true);
@@ -2280,6 +2392,7 @@ function HomeScreen({
   onOpenAccount,
   onOpenArchive,
   onManageExercises,
+  onOpenSupport,
 }) {
   const daySlots = getMesoDaySlots(meso);
   const activeMuscles = getActiveMusclesFromSlots(daySlots);
@@ -2506,7 +2619,7 @@ function HomeScreen({
             })}
           </div>
 
-          <SupportCard compact />
+          <SupportCard compact onOpenSupport={onOpenSupport} />
         </>
       )}
     </div>
@@ -2527,6 +2640,7 @@ function AccountSheet({
   onForgotPassword,
   onSignOut,
   onRefresh,
+  onOpenSupport,
   onOpenArchive,
 }) {
   return (
@@ -2560,7 +2674,7 @@ function AccountSheet({
           onOpenArchive={onOpenArchive}
           archivedCount={archivedCount}
         />
-        <SupportCard />
+        <SupportCard onOpenSupport={onOpenSupport} />
       </div>
     </div>
   );
@@ -2738,13 +2852,22 @@ function CloudSyncCard({
   );
 }
 
-function SupportCard({ compact = false }) {
+function SupportCard({ compact = false, onOpenSupport }) {
   return (
     <div className="card stack analytics-card">
       <div className="eyebrow">Support</div>
       <div className="display" style={{ fontSize: compact ? 34 : 38, lineHeight: 0.92 }}>
-        Contact & Feedback
+        Support HyperPhases
       </div>
+      <div className="small">
+        Contributions help fund product development, hosting, and ongoing iteration. For bugs, product feedback, or account issues, contact the HyperPhases team directly.
+      </div>
+      {onOpenSupport && (
+        <button className="btn-primary" onClick={onOpenSupport}>
+          Open Support Page
+        </button>
+      )}
+      <div className="label tiny gold">Feedback & Contact</div>
       <div className="small">
         For bug reports, product feedback, account issues, or training-log problems, contact the HyperPhases team directly.
       </div>
@@ -2757,6 +2880,289 @@ function SupportCard({ compact = false }) {
       <a className="btn-ghost support-link" href="mailto:feedback@hyperphases.com?subject=HyperPhases%20Feedback">
         Email Support
       </a>
+    </div>
+  );
+}
+
+function SupportCheckoutScreen({
+  cloudUser,
+  supabaseClient,
+  initialSuccess,
+  onClearSuccess,
+  onBack,
+}) {
+  const [selectedAmount, setSelectedAmount] = useState(DEFAULT_SUPPORT_AMOUNT);
+  const [customAmount, setCustomAmount] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [checkoutMode, setCheckoutMode] = useState(initialSuccess ? "success" : "idle");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!initialSuccess) return;
+    setCheckoutMode("success");
+    setClientSecret("");
+    setError("");
+  }, [initialSuccess]);
+
+  const stripeAvailable = Boolean(DEPLOY_CONFIG.stripePublishableKey && window.Stripe);
+  const activeAmountInput = customAmount !== "" ? customAmount : selectedAmount;
+  const normalizedAmount = normalizeSupportAmount(activeAmountInput);
+  const checkoutLabel = normalizedAmount ? formatEuro(normalizedAmount) : "custom amount";
+
+  useEffect(() => {
+    if (checkoutMode !== "checkout" || !clientSecret) return undefined;
+    let cancelled = false;
+    let checkoutInstance = null;
+
+    (async () => {
+      try {
+        const stripe = await getStripeClient();
+        if (!stripe) {
+          throw new Error("Stripe is not configured yet. Add the publishable key in config.js first.");
+        }
+        checkoutInstance = await stripe.initEmbeddedCheckout({
+          fetchClientSecret: async () => clientSecret,
+        });
+        if (cancelled) {
+          checkoutInstance.destroy?.();
+          return;
+        }
+        const mountTarget = document.getElementById("support-checkout");
+        if (!mountTarget) {
+          throw new Error("Checkout container could not be created.");
+        }
+        mountTarget.innerHTML = "";
+        checkoutInstance.mount("#support-checkout");
+      } catch (mountError) {
+        console.error(mountError);
+        if (!cancelled) {
+          setCheckoutMode("idle");
+          setClientSecret("");
+          setError(mountError.message || "Unable to load checkout.");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (checkoutInstance?.destroy) {
+        checkoutInstance.destroy();
+      }
+      const mountTarget = document.getElementById("support-checkout");
+      if (mountTarget) {
+        mountTarget.innerHTML = "";
+      }
+    };
+  }, [checkoutMode, clientSecret]);
+
+  const resetCheckout = useCallback(() => {
+    setClientSecret("");
+    setCheckoutMode("idle");
+    setError("");
+  }, []);
+
+  const handlePresetSelect = useCallback(
+    (amount) => {
+      if (initialSuccess) {
+        onClearSuccess();
+      }
+      setSelectedAmount(amount);
+      setCustomAmount("");
+      resetCheckout();
+    },
+    [initialSuccess, onClearSuccess, resetCheckout]
+  );
+
+  const handleCustomAmountChange = useCallback(
+    (value) => {
+      if (initialSuccess) {
+        onClearSuccess();
+      }
+      setCustomAmount(value);
+      resetCheckout();
+    },
+    [initialSuccess, onClearSuccess, resetCheckout]
+  );
+
+  const handleStartCheckout = useCallback(async () => {
+    try {
+      setBusy(true);
+      setError("");
+      if (initialSuccess) {
+        onClearSuccess();
+      }
+      const stripe = await getStripeClient();
+      if (!stripe) {
+        throw new Error("Stripe is not configured yet. Add the publishable key in config.js first.");
+      }
+      const payload = await createSupportCheckoutSession({
+        supabaseClient,
+        amount: activeAmountInput,
+        email: cloudUser?.email || "",
+      });
+      if (!payload?.clientSecret) {
+        throw new Error("Checkout session was created without a client secret.");
+      }
+      setClientSecret(payload.clientSecret);
+      setCheckoutMode("checkout");
+    } catch (checkoutError) {
+      console.error(checkoutError);
+      setCheckoutMode("idle");
+      setClientSecret("");
+      setError(checkoutError.message || "Unable to start checkout.");
+    } finally {
+      setBusy(false);
+    }
+  }, [activeAmountInput, cloudUser, initialSuccess, onClearSuccess, supabaseClient]);
+
+  return (
+    <div className="stack">
+      <div className="sticky">
+        <div className="card header-card">
+          <div className="space-between">
+            <div>
+              <div className="display" style={{ fontSize: 42, lineHeight: 0.9 }}>
+                Support <span className="accent">HyperPhases</span>
+              </div>
+              <div className="mono tiny gold">
+                Help fund development, infrastructure, and the next round of improvements.
+              </div>
+            </div>
+            <button className="btn-ghost" onClick={onBack}>
+              Back
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card stack analytics-card">
+        <div className="eyebrow">Support The Platform</div>
+        <div className="display" style={{ fontSize: 46, lineHeight: 0.92 }}>
+          Keep HyperPhases Moving
+        </div>
+        <div className="small">
+          If the platform is useful, you can support ongoing product work with a one-time payment. This helps cover infrastructure, maintenance, and future improvements without pushing the app toward subscription friction.
+        </div>
+        <div className="notice">
+          <div className="label tiny gold" style={{ marginBottom: 8 }}>
+            signed in account
+          </div>
+          <div className="small">
+            This checkout will be prefilled for <span className="mono">{cloudUser?.email}</span>.
+          </div>
+        </div>
+      </div>
+
+      {checkoutMode === "success" ? (
+        <div className="card stack analytics-card">
+          <div className="eyebrow">Payment Complete</div>
+          <div className="display" style={{ fontSize: 50, lineHeight: 0.9 }}>
+            Thank You
+          </div>
+          <div className="small">
+            Your support has been received. It directly funds the product and keeps HyperPhases sustainable while the core tracking experience stays lightweight.
+          </div>
+          <div className="grid-2">
+            <button
+              className="btn-ghost"
+              onClick={() => {
+                onClearSuccess();
+                resetCheckout();
+              }}
+            >
+              Support Again
+            </button>
+            <button className="btn-sm" onClick={onBack}>
+              Return Home
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="card stack">
+            <div className="title-row">
+              <div>
+                <div className="eyebrow">Choose Amount</div>
+                <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
+                  One-Time Support
+                </div>
+              </div>
+              <div className="mono tiny gold">EUR</div>
+            </div>
+            <div className="grid-3">
+              {SUPPORT_PRESET_AMOUNTS.map((amount) => (
+                <button
+                  key={amount}
+                  className={`pill-btn gold ${customAmount === "" && Number(selectedAmount) === amount ? "active" : ""}`}
+                  onClick={() => handlePresetSelect(amount)}
+                >
+                  <span className="display" style={{ fontSize: 28 }}>
+                    {formatEuro(amount)}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="stack">
+              <div className="label tiny gold">custom amount</div>
+              <input
+                type="number"
+                min={MIN_SUPPORT_AMOUNT_EUR}
+                max={MAX_SUPPORT_AMOUNT_EUR}
+                step="1"
+                value={customAmount}
+                onChange={(event) => handleCustomAmountChange(event.target.value)}
+                placeholder={`Enter ${MIN_SUPPORT_AMOUNT_EUR} to ${MAX_SUPPORT_AMOUNT_EUR} EUR`}
+              />
+              <div className="tiny muted">
+                Support amounts can be between {formatEuro(MIN_SUPPORT_AMOUNT_EUR)} and {formatEuro(MAX_SUPPORT_AMOUNT_EUR)}.
+              </div>
+            </div>
+            {!stripeAvailable && (
+              <div className="notice">
+                <div className="label tiny" style={{ color: "var(--warn)", marginBottom: 8 }}>
+                  setup needed
+                </div>
+                <div className="small">
+                  Stripe checkout is not configured yet. Add your Stripe publishable key to <span className="mono">config.js</span> and load Stripe.js in the page before using this screen.
+                </div>
+              </div>
+            )}
+            {error && (
+              <div className="notice" style={{ borderColor: "rgba(217, 121, 23, 0.28)" }}>
+                <div className="small" style={{ color: "var(--warn)" }}>{error}</div>
+              </div>
+            )}
+            <button
+              className="btn-primary"
+              disabled={busy || !normalizedAmount || !stripeAvailable}
+              onClick={handleStartCheckout}
+            >
+              {busy ? "Preparing Checkout" : `Continue with ${checkoutLabel}`}
+            </button>
+          </div>
+
+          {checkoutMode === "checkout" && (
+            <div className="card stack">
+              <div className="title-row">
+                <div>
+                  <div className="eyebrow">Secure Payment</div>
+                  <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
+                    Embedded Checkout
+                  </div>
+                </div>
+                <button className="btn-ghost" onClick={resetCheckout}>
+                  Change Amount
+                </button>
+              </div>
+              <div className="small muted">
+                Complete your payment below without leaving HyperPhases.
+              </div>
+              <div id="support-checkout" className="checkout-shell" />
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

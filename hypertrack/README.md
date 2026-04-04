@@ -46,6 +46,8 @@ HyperPhases supports:
 - archived mesocycle folder for previous blocks
 - homepage progression analytics and goal bars
 - preset split library with editable day names and muscle assignments before the mesocycle starts
+- a dedicated support checkout page with embedded Stripe Checkout
+- feedback and account support contact at `feedback@hyperphases.com`
 
 ## How the training logic works
 
@@ -126,12 +128,72 @@ Recommended behavior:
 
 The app stores the full active or archived mesocycle state in `meso_json`, while the top-level columns support filtering and archive browsing.
 
+## Support checkout
+
+HyperPhases now includes a one-time support flow framed as supporting the platform rather than a donation mechanic.
+
+How it works:
+
+- the user opens `Support HyperPhases` from the home screen or account sheet
+- they choose a preset amount or enter a custom EUR amount
+- the static frontend calls a Supabase Edge Function
+- the Edge Function creates an embedded Stripe Checkout Session
+- Stripe mounts directly inside the app and returns to the app with `?support=success`
+
+This keeps the frontend static while avoiding shipping the Stripe secret key to the browser.
+
+### Frontend config
+
+`config.js` now needs:
+
+```js
+window.__HYPERTRACK_CONFIG__ = {
+  supabaseUrl: "https://YOUR_PROJECT.supabase.co",
+  supabaseAnonKey: "YOUR_SUPABASE_ANON_KEY",
+  stripePublishableKey: "pk_live_or_test_...",
+};
+```
+
+The publishable key is safe to expose in a static app. Do not put the Stripe secret key in `config.js`.
+
+### Stripe + Supabase setup
+
+1. In Stripe, copy your publishable key and secret key from the Developers section.
+2. Put the publishable key in `config.js`.
+3. Set the secret key in Supabase for Edge Functions:
+
+```bash
+supabase secrets set STRIPE_SECRET_KEY=sk_live_or_test_...
+```
+
+4. Deploy the Edge Function from this repo:
+
+```bash
+supabase functions deploy create-support-checkout-session
+```
+
+5. Make sure your deployed app URL is allowed in Stripe and Supabase auth redirect settings if needed.
+
+### Support function
+
+The function lives at:
+
+- `supabase/functions/create-support-checkout-session/index.ts`
+
+It:
+
+- validates the support amount
+- accepts only EUR
+- creates an embedded Checkout Session
+- returns the Stripe `clientSecret` used by `stripe.initEmbeddedCheckout(...)`
+
 ## Project structure
 
 - `index.html`
   - fonts
   - CSS
   - React runtime
+  - Stripe.js runtime
   - Supabase browser client script
   - Babel standalone loader
 - `app.jsx`
@@ -142,5 +204,8 @@ The app stores the full active or archived mesocycle state in `meso_json`, while
   - session logging
   - archive/history views
   - auth-first account flow
+  - embedded Stripe support checkout flow
 - `config.js`
-  - committed browser-readable Supabase public config
+  - committed browser-readable Supabase and Stripe public config
+- `supabase/functions/create-support-checkout-session/index.ts`
+  - Supabase Edge Function for creating embedded Stripe Checkout sessions
