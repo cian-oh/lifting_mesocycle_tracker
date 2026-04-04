@@ -1,6 +1,8 @@
 const { useState, useEffect, useCallback } = React;
 
 const STORAGE_KEY = "hypertrack_cian_v1";
+const SUPABASE_CONFIG_KEY = "hypertrack_cian_supabase_v1";
+const SUPABASE_TABLE = "hypertrack_mesos";
 const DEFAULT_INCREMENT = 2.5;
 const DAY_TYPES = ["Upper", "Lower", "Push", "Pull"];
 const MUSCLES = [
@@ -72,6 +74,25 @@ const STEP_LABELS = {
   fresh: [0, 1, 2, 3],
   resume: [0, 1, 2, 3],
 };
+
+function loadSupabaseConfig() {
+  try {
+    const raw = localStorage.getItem(SUPABASE_CONFIG_KEY);
+    if (!raw) return { url: "", anonKey: "" };
+    const parsed = JSON.parse(raw);
+    return {
+      url: parsed?.url || "",
+      anonKey: parsed?.anonKey || "",
+    };
+  } catch (error) {
+    console.error(error);
+    return { url: "", anonKey: "" };
+  }
+}
+
+function saveSupabaseConfig(config) {
+  localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify(config));
+}
 
 const EQUIPMENT_EXERCISES = {
   Chest: {
@@ -289,6 +310,66 @@ function createStorageAdapter() {
 
 const storage = createStorageAdapter();
 
+function createSupabaseClient(config) {
+  if (!config?.url || !config?.anonKey || !window.supabase?.createClient) {
+    return null;
+  }
+  try {
+    return window.supabase.createClient(config.url, config.anonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+}
+
+function withUpdatedAt(meso) {
+  return {
+    ...meso,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function fetchRemoteMeso(client, userId) {
+  const { data, error } = await client
+    .from(SUPABASE_TABLE)
+    .select("meso_json, updated_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function pushRemoteMeso(client, userId, meso) {
+  const payload = withUpdatedAt(meso);
+  const { error } = await client.from(SUPABASE_TABLE).upsert(
+    {
+      user_id: userId,
+      meso_json: payload,
+      updated_at: payload.updatedAt,
+    },
+    { onConflict: "user_id" }
+  );
+  if (error) throw error;
+  return payload;
+}
+
+function pickNewestMeso(localMeso, remoteRow) {
+  const remoteMeso = remoteRow?.meso_json || null;
+  if (!localMeso) return remoteMeso;
+  if (!remoteMeso) return localMeso;
+  const localTime = new Date(localMeso.updatedAt || localMeso.started || 0).getTime();
+  const remoteTime = new Date(
+    remoteMeso.updatedAt || remoteRow.updated_at || remoteMeso.started || 0
+  ).getTime();
+  return remoteTime > localTime ? remoteMeso : localMeso;
+}
+
 function getLastPerformance(sessions, muscle, exerciseName) {
   for (let idx = sessions.length - 1; idx >= 0; idx -= 1) {
     const session = sessions[idx];
@@ -472,6 +553,11 @@ function App() {
   const [sessionState, setSessionState] = useState(null);
   const [swapTarget, setSwapTarget] = useState(null);
   const [incrementTarget, setIncrementTarget] = useState(null);
+  const [cloudConfig, setCloudConfig] = useState(() => loadSupabaseConfig());
+  const [supabaseClient, setSupabaseClient] = useState(null);
+  const [cloudUser, setCloudUser] = useState(null);
+  const [cloudStatus, setCloudStatus] = useState("Local-only mode");
+  const [cloudBusy, setCloudBusy] = useState(false);
 
   useEffect(() => {
     storage.get().then((saved) => {
@@ -490,10 +576,156 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const persistMeso = useCallback(async (nextMeso) => {
-    setMeso(nextMeso);
-    await storage.set(nextMeso);
+  useEffect(() => {
+    if (meso && (screen === "welcome" || screen === "loading")) {
+      setScreen("home");
+    }
+  }, [meso, screen]);
+
+  useEffect(() => {
+    const client = createSupabaseClient(cloudConfig);
+    setSupabaseClient(client);
+    if (!client) {
+      setCloudUser(null);
+      setCloudStatus(
+        cloudConfig.url || cloudConfig.anonKey
+          ? "Supabase config incomplete"
+          : "Local-only mode"
+      );
+      return undefined;
+    }
+    let active = true;
+    client.auth.getUser().then(({ data, error }) => {
+      if (!active) return;
+      if (error) {
+        console.error(error);
+        setCloudStatus("Supabase auth unavailable");
+        return;
+      }
+      setCloudUser(data.user || null);
+      setCloudStatus(data.user ? `Signed in as ${data.user.email}` : "Supabase ready");
+    });
+    const {
+      data: { subscription },
+    } = client.auth.onAuthStateChange((_event, session) => {
+      setCloudUser(session?.user || null);
+      setCloudStatus(session?.user ? `Signed in as ${session.user.email}` : "Supabase ready");
+    });
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [cloudConfig]);
+
+  const persistMeso = useCallback(
+    async (nextMeso, options = {}) => {
+      let payload = withUpdatedAt(nextMeso);
+      setMeso(payload);
+      await storage.set(payload);
+      if (options.skipRemote) {
+        return payload;
+      }
+      if (supabaseClient && cloudUser) {
+        try {
+          setCloudBusy(true);
+          payload = await pushRemoteMeso(supabaseClient, cloudUser.id, payload);
+          setMeso(payload);
+          await storage.set(payload);
+          setCloudStatus(`Synced ${new Date(payload.updatedAt).toLocaleString()}`);
+        } catch (error) {
+          console.error(error);
+          setCloudStatus("Cloud sync failed; local save kept");
+        } finally {
+          setCloudBusy(false);
+        }
+      }
+      return payload;
+    },
+    [cloudUser, supabaseClient]
+  );
+
+  const syncFromCloud = useCallback(async () => {
+    if (!supabaseClient || !cloudUser) return;
+    try {
+      setCloudBusy(true);
+      const remoteRow = await fetchRemoteMeso(supabaseClient, cloudUser.id);
+      const localMeso = await storage.get();
+      const chosen = pickNewestMeso(localMeso, remoteRow);
+      if (chosen) {
+        setMeso(chosen);
+        await storage.set(chosen);
+        if (!remoteRow || chosen === localMeso) {
+          await pushRemoteMeso(supabaseClient, cloudUser.id, chosen);
+        }
+      }
+      setCloudStatus(remoteRow ? "Cloud sync complete" : "No cloud mesocycle found yet");
+    } catch (error) {
+      console.error(error);
+      setCloudStatus("Cloud sync failed");
+    } finally {
+      setCloudBusy(false);
+    }
+  }, [cloudUser, supabaseClient]);
+
+  useEffect(() => {
+    if (!supabaseClient || !cloudUser) return;
+    syncFromCloud();
+  }, [cloudUser, supabaseClient, syncFromCloud]);
+
+  const handleSaveCloudConfig = useCallback((config) => {
+    saveSupabaseConfig(config);
+    setCloudConfig(config);
+    setToast("Supabase config saved");
   }, []);
+
+  const handleSendMagicLink = useCallback(
+    async (email) => {
+      const client = createSupabaseClient(cloudConfig);
+      if (!client) {
+        setCloudStatus("Enter Supabase URL and anon key first");
+        return;
+      }
+      try {
+        setCloudBusy(true);
+        const { error } = await client.auth.signInWithOtp({
+          email,
+          options: {
+            emailRedirectTo: window.location.href,
+          },
+        });
+        if (error) throw error;
+        setCloudStatus(`Magic link sent to ${email}`);
+        setToast("Magic link sent");
+      } catch (error) {
+        console.error(error);
+        setCloudStatus("Magic link failed");
+      } finally {
+        setCloudBusy(false);
+      }
+    },
+    [cloudConfig]
+  );
+
+  const handleSignOut = useCallback(async () => {
+    if (!supabaseClient) return;
+    try {
+      setCloudBusy(true);
+      const { error } = await supabaseClient.auth.signOut();
+      if (error) throw error;
+      setCloudUser(null);
+      setCloudStatus("Signed out; local mode still available");
+    } catch (error) {
+      console.error(error);
+      setCloudStatus("Sign-out failed");
+    } finally {
+      setCloudBusy(false);
+    }
+  }, [supabaseClient]);
+
+  const handlePushCloud = useCallback(async () => {
+    if (!meso) return;
+    await persistMeso(meso);
+  }, [meso, persistMeso]);
 
   const handleNewMeso = useCallback(async () => {
     const confirmed = window.confirm("Start a new mesocycle and clear the current one?");
@@ -614,7 +846,19 @@ function App() {
     <div className="app-shell">
       {screen === "loading" && <LoadingScreen />}
       {screen === "welcome" && (
-        <WelcomeScreen onStart={() => setScreen("setup")} />
+        <WelcomeScreen
+          onStart={() => setScreen("setup")}
+          hasMeso={Boolean(meso)}
+          cloudConfig={cloudConfig}
+          cloudUser={cloudUser}
+          cloudStatus={cloudStatus}
+          cloudBusy={cloudBusy}
+          onSaveCloudConfig={handleSaveCloudConfig}
+          onSendMagicLink={handleSendMagicLink}
+          onSignOut={handleSignOut}
+          onPullCloud={syncFromCloud}
+          onPushCloud={handlePushCloud}
+        />
       )}
       {screen === "setup" && (
         <SetupScreen
@@ -631,6 +875,15 @@ function App() {
           meso={meso}
           onNewMeso={handleNewMeso}
           onStartSession={startSession}
+          cloudConfig={cloudConfig}
+          cloudUser={cloudUser}
+          cloudStatus={cloudStatus}
+          cloudBusy={cloudBusy}
+          onSaveCloudConfig={handleSaveCloudConfig}
+          onSendMagicLink={handleSendMagicLink}
+          onSignOut={handleSignOut}
+          onPullCloud={syncFromCloud}
+          onPushCloud={handlePushCloud}
         />
       )}
       {screen === "session" && meso && sessionState && (
@@ -691,7 +944,19 @@ function LoadingScreen() {
   );
 }
 
-function WelcomeScreen({ onStart }) {
+function WelcomeScreen({
+  onStart,
+  hasMeso,
+  cloudConfig,
+  cloudUser,
+  cloudStatus,
+  cloudBusy,
+  onSaveCloudConfig,
+  onSendMagicLink,
+  onSignOut,
+  onPullCloud,
+  onPushCloud,
+}) {
   return (
     <div className="centered stack">
       <div>
@@ -721,6 +986,18 @@ function WelcomeScreen({ onStart }) {
           Currently supported: Upper / Lower / Push / Pull split only. Other splits are not supported at this time.
         </div>
       </div>
+      <CloudSyncCard
+        hasMeso={hasMeso}
+        initialConfig={cloudConfig}
+        cloudUser={cloudUser}
+        cloudStatus={cloudStatus}
+        cloudBusy={cloudBusy}
+        onSaveCloudConfig={onSaveCloudConfig}
+        onSendMagicLink={onSendMagicLink}
+        onSignOut={onSignOut}
+        onPullCloud={onPullCloud}
+        onPushCloud={onPushCloud}
+      />
       <button className="btn-primary" onClick={onStart}>
         Start Mesocycle
       </button>
@@ -1311,7 +1588,20 @@ function SetupScreen({ onComplete, onCancel }) {
   );
 }
 
-function HomeScreen({ meso, onNewMeso, onStartSession }) {
+function HomeScreen({
+  meso,
+  onNewMeso,
+  onStartSession,
+  cloudConfig,
+  cloudUser,
+  cloudStatus,
+  cloudBusy,
+  onSaveCloudConfig,
+  onSendMagicLink,
+  onSignOut,
+  onPullCloud,
+  onPushCloud,
+}) {
   const doneDayTypes = getWeekDoneDayTypes(meso, meso.week);
   const progress = meso.totalWeeks > 0 ? clamp(((meso.week - 1) / meso.totalWeeks) * 100, 0, 100) : 0;
   const complete = meso.week > meso.totalWeeks;
@@ -1332,6 +1622,19 @@ function HomeScreen({ meso, onNewMeso, onStartSession }) {
           </div>
         </div>
       </div>
+
+      <CloudSyncCard
+        hasMeso={Boolean(meso)}
+        initialConfig={cloudConfig}
+        cloudUser={cloudUser}
+        cloudStatus={cloudStatus}
+        cloudBusy={cloudBusy}
+        onSaveCloudConfig={onSaveCloudConfig}
+        onSendMagicLink={onSendMagicLink}
+        onSignOut={onSignOut}
+        onPullCloud={onPullCloud}
+        onPushCloud={onPushCloud}
+      />
 
       {complete ? (
         <div className="card stack" style={{ textAlign: "center" }}>
@@ -1421,6 +1724,102 @@ function HomeScreen({ meso, onNewMeso, onStartSession }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function CloudSyncCard({
+  hasMeso,
+  initialConfig,
+  cloudUser,
+  cloudStatus,
+  cloudBusy,
+  onSaveCloudConfig,
+  onSendMagicLink,
+  onSignOut,
+  onPullCloud,
+  onPushCloud,
+}) {
+  const [url, setUrl] = useState(initialConfig?.url || "");
+  const [anonKey, setAnonKey] = useState(initialConfig?.anonKey || "");
+  const [email, setEmail] = useState(cloudUser?.email || "");
+
+  useEffect(() => {
+    setUrl(initialConfig?.url || "");
+    setAnonKey(initialConfig?.anonKey || "");
+  }, [initialConfig]);
+
+  useEffect(() => {
+    if (cloudUser?.email) {
+      setEmail(cloudUser.email);
+    }
+  }, [cloudUser]);
+
+  return (
+    <div className="card stack">
+      <div className="title-row">
+        <div>
+          <div className="eyebrow">// cloud sync</div>
+          <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
+            Supabase
+          </div>
+        </div>
+        <div className="mono tiny gold">{cloudUser ? "connected" : "optional"}</div>
+      </div>
+      <div className="mono tiny muted">
+        {cloudStatus}
+      </div>
+      <input
+        type="text"
+        value={url}
+        onChange={(event) => setUrl(event.target.value)}
+        placeholder="Supabase project URL"
+      />
+      <input
+        type="text"
+        value={anonKey}
+        onChange={(event) => setAnonKey(event.target.value)}
+        placeholder="Supabase anon key"
+      />
+      <div className="title-row">
+        <button
+          className="btn-ghost"
+          onClick={() => onSaveCloudConfig({ url: url.trim(), anonKey: anonKey.trim() })}
+        >
+          Save Config
+        </button>
+        {cloudUser && (
+          <button className="btn-ghost" onClick={onSignOut}>
+            Sign Out
+          </button>
+        )}
+      </div>
+      <input
+        type="email"
+        value={email}
+        onChange={(event) => setEmail(event.target.value)}
+        placeholder="Email for magic link"
+      />
+      <button
+        className="btn-primary"
+        disabled={cloudBusy || !email.trim()}
+        onClick={() => onSendMagicLink(email.trim())}
+      >
+        {cloudBusy ? "Working..." : cloudUser ? "Send Another Magic Link" : "Email Magic Link"}
+      </button>
+      {cloudUser && (
+        <div className="grid-2">
+          <button className="btn-ghost" onClick={onPullCloud}>
+            Pull Cloud
+          </button>
+          <button className="btn-ghost" onClick={onPushCloud} disabled={!hasMeso}>
+            Push Current
+          </button>
+        </div>
+      )}
+      <div className="tiny muted">
+        Local storage always remains active. Supabase adds account-based sync for the same mesocycle JSON blob.
+      </div>
     </div>
   );
 }

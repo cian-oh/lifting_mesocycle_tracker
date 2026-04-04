@@ -1,116 +1,346 @@
 # HyperTrack
 
-Mobile-first RP-style hypertrophy tracker built as a static React app for free Cloudflare Pages hosting.
+HyperTrack is a mobile-first hypertrophy tracker built for an Upper / Lower / Push / Pull split and styled around an industrial luxury aesthetic: deep black surfaces, crimson actions, gold data accents, dense mid-workout UI, and a single-screen-first flow.
 
-## What’s in here
+The app is designed to reproduce the core practical loop of RP-style hypertrophy tracking without a subscription:
 
-- `index.html`: static entrypoint, fonts, CSS, React runtime, Babel loader
-- `app.jsx`: the full app in one file
+- target RIR changes across the mesocycle
+- suggested load changes based on prior RIR performance
+- weekly volume ramps based on pump, soreness, and performance feedback
+- exercises stay stable through the mesocycle unless you deliberately swap them
 
-## Storage
+This repository is intentionally simple:
 
-By default the app persists to browser `localStorage` under `hypertrack_cian_v1`.
+- static hosting friendly
+- no build step
+- one `index.html`
+- one `app.jsx`
+- optional Supabase auth and sync
 
-It also detects and uses `window.storage.get/set` if that API exists, so the same app can run in environments that expose a Claude-style storage adapter.
+## What the app does
 
-## Run locally
+HyperTrack supports:
 
-Because this app uses browser-loaded JSX, you should serve the folder over a simple static server rather than opening `index.html` directly.
+- fresh mesocycle setup
+- resume-mid-meso setup with seed performance data
+- exercise selection by muscle group
+- per-exercise weight increment configuration
+- set-by-set workout logging
+- inline muscle feedback collection
+- automatic weekly volume adjustment
+- automatic week advancement after all 4 split days are logged
+- optional cloud sync through Supabase magic-link auth
 
-Examples:
+Supported split only:
+
+- Upper
+- Lower
+- Push
+- Pull
+
+Other splits are intentionally not supported in this version.
+
+## How the training logic works
+
+### Target RIR by week
+
+- Week 1: `3`
+- Week 2: `2`
+- Week 3: `2`
+- Week 4: `1`
+- Week 5: `1`
+- Week 6+: `0`
+
+### Weight progression
+
+For each exercise, HyperTrack looks at the last completed set it can find for that movement.
+
+- If actual RIR was above target, load increases.
+- If actual RIR was below target, load decreases slightly.
+- If actual RIR matched target, load stays the same.
+
+Adjustment size:
+
+- big muscles: `±2.5%`
+- small muscles: `±1.5%`
+
+Big muscles:
+
+- Chest
+- Back
+- Quads
+- Hamstrings
+- Glutes
+
+The final number is snapped to the exercise’s configured increment.
+
+### Volume progression
+
+Each muscle has an MEV and MRV range. After a session, the app adjusts weekly sets for the muscles trained that day:
+
+- default: `+2`
+- low pump: `+3`
+- moderate soreness: stop upward ramp
+- severe soreness: `-2`
+
+Volume is always clamped inside the muscle’s MEV to MRV range.
+
+### Resume flow
+
+If you resume partway through a mesocycle, the app:
+
+- asks for current week
+- asks for your recent weight / reps / RIR per exercise
+- builds a synthetic seed session
+- calculates starting volume based on mesocycle position
+
+That lets the first resumed workout still produce weight suggestions immediately.
+
+## Project structure
+
+- `index.html`
+  - fonts
+  - CSS
+  - React runtime
+  - Supabase browser client script
+  - Babel standalone loader
+- `app.jsx`
+  - entire UI
+  - mesocycle logic
+  - persistence
+  - setup flows
+  - session logging
+  - Supabase auth and sync
+
+## Local persistence
+
+The app always keeps a local copy of your mesocycle.
+
+Primary app data key:
+
+- `hypertrack_cian_v1`
+
+Supabase config key:
+
+- `hypertrack_cian_supabase_v1`
+
+Storage behavior:
+
+- uses `window.storage.get/set` if available
+- otherwise falls back to browser `localStorage`
+
+That means the app works in:
+
+- a normal browser-only deployment
+- an environment exposing a Claude-style storage API
+
+## Supabase integration
+
+This version now includes optional Supabase integration.
+
+### What Supabase is used for
+
+Supabase is used for:
+
+- email magic-link authentication
+- syncing the single `meso` JSON blob across devices
+
+Supabase Storage buckets are not used. This app stores the training state in the Supabase database as JSON.
+
+### Sync model
+
+The app stays local-first:
+
+- every save writes locally first
+- if you are signed into Supabase, the same mesocycle is also pushed to the cloud
+- when you sign in, the app compares local and remote timestamps and keeps the newer one
+
+This gives you:
+
+- offline usability
+- cloud backup
+- cross-device continuity
+
+### Supabase table
+
+Create a table named `hypertrack_mesos`.
+
+Suggested SQL:
+
+```sql
+create table if not exists public.hypertrack_mesos (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  meso_json jsonb not null,
+  updated_at timestamptz not null default timezone('utc', now())
+);
+```
+
+### Row Level Security
+
+Enable RLS and allow each user to access only their own row.
+
+```sql
+alter table public.hypertrack_mesos enable row level security;
+
+create policy "Users can read their own meso"
+on public.hypertrack_mesos
+for select
+using (auth.uid() = user_id);
+
+create policy "Users can insert their own meso"
+on public.hypertrack_mesos
+for insert
+with check (auth.uid() = user_id);
+
+create policy "Users can update their own meso"
+on public.hypertrack_mesos
+for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+```
+
+### Supabase auth flow in the app
+
+The app exposes a Supabase panel on the welcome screen and home screen.
+
+You enter:
+
+- Supabase project URL
+- Supabase anon key
+- your email address
+
+Then:
+
+1. Save config.
+2. Request a magic link.
+3. Open the email on your phone or browser.
+4. Return to the app.
+5. The app restores the session and syncs your mesocycle row.
+
+### Supabase dashboard setup
+
+Before using the magic-link flow, configure your Supabase project:
+
+1. Enable Email auth in Supabase Auth.
+2. Add your Cloudflare Pages URL to the allowed site / redirect settings.
+3. Copy the project URL and anon key into the app’s Supabase panel.
+
+If you test locally, also add your local URL such as:
+
+- `http://localhost:4173`
+
+### What the app syncs
+
+It syncs one row per user containing the full `meso` object, including:
+
+- current week
+- total weeks
+- exercise selection
+- increments
+- weekly volume
+- session logs
+- resume seed data
+
+### Important note on secrets
+
+The Supabase anon key is meant to be used in the browser. Do not place your Supabase service role key in this app.
+
+## Running locally
+
+Because the app loads JSX in the browser, serve the directory over a local static server instead of opening `index.html` directly from Finder.
+
+Example:
 
 ```bash
-cd hypertrack
+cd /Users/cianoh/hypertrack
 python3 -m http.server 4173
 ```
 
-Then open `http://localhost:4173`.
+Then open:
 
-## Deploy to Cloudflare Pages
+```txt
+http://localhost:4173
+```
 
-This project is intentionally zero-build.
+## Deploying to Cloudflare Pages
 
-1. Create a new GitHub repo and drag this `hypertrack` directory into it.
-2. Push the repo to GitHub.
-3. In Cloudflare Pages, choose `Create a project` and connect the repo.
-4. Use these settings:
-   - Framework preset: `None`
-   - Build command: leave blank
-   - Build output directory: `/`
-5. Deploy.
+This is a zero-build static app.
 
-Cloudflare Pages free tier is enough for this app because it is just static files.
+Use these settings in Cloudflare Pages:
 
-## Free storage guidance
+- Framework preset: `None`
+- Build command: leave blank
+- Build output directory: `/`
 
-For a personal free deployment, the simplest storage option is exactly what this app already uses:
+That works because the repository is already a fully static frontend.
 
-- `localStorage` is free
-- no server is required
-- no account auth is required
-- your data stays in your browser on your device
+## Uploading to GitHub
 
-That is the right fit if:
+If you do not want to sign into GitHub in the laptop browser, the easiest workflow is:
 
-- only you are using the app
-- you mainly use one phone or one browser profile
-- you do not need cross-device sync
+1. Create an empty repo from your phone or another machine.
+2. Upload these files into the repo root:
+   - `index.html`
+   - `app.jsx`
+   - `README.md`
+3. Connect that repo to Cloudflare Pages.
 
-### Important limitation
+## AI exercise suggestions
 
-`localStorage` is device/browser specific. If you switch phone, clear browser data, or use a different browser, the stored mesocycle does not follow you.
+The app contains an Anthropic fetch path for exercise suggestion, but it also has a built-in fallback exercise library.
 
-## If you later want sync but still want to stay cheap
+Practical recommendation:
 
-Best upgrade path:
+- use the built-in fallback by default
+- only enable Anthropic if you deliberately want browser-side exercise suggestion behavior and understand the API key exposure tradeoff
 
-1. Keep this UI on Cloudflare Pages.
-2. Add a tiny Cloudflare Worker API.
-3. Store the JSON blob in a free Cloudflare KV namespace or D1 database.
-4. Protect it with Cloudflare Access or a simple personal passcode flow.
+For a personal static deployment, the fallback path is the safer default.
 
-I did not wire that in by default because you asked for free and simple, and local browser storage is the cleanest first version.
+## Product behavior summary
 
-## Supabase option
+Welcome:
 
-Yes. Supabase is a reasonable alternative if you want:
+- brand intro
+- split notice
+- optional Supabase cloud setup
 
-- the same data on multiple devices
-- a simple hosted Postgres backend
-- email login or magic-link auth later
+Setup:
 
-For this app specifically, Supabase Database is the better fit than Supabase Storage.
+- fresh flow
+- resume flow
+- exercise review
+- increment configuration
+- starting volume or resume data capture
 
-- Use a small table to store the `meso` JSON blob per user.
-- Keep the app on Cloudflare Pages.
-- Add a lightweight auth flow so only your account can read and write your plan data.
+Home:
 
-Recommended shape:
+- week banner
+- target RIR
+- cloud sync card
+- day grid
+- volume tracker
 
-- `profiles` table or `mesocycles` table
-- columns like `id`, `user_id`, `meso_json`, `updated_at`
-- Row Level Security so only your logged-in user can access rows
+Session:
 
-I did not build that in yet because it adds:
+- suggested load per exercise
+- per-set logging
+- swap modal
+- increment modal
+- inline pump / soreness / performance rating
+- save gate only after all trained muscles are completed and rated
 
-- auth setup
-- Supabase project configuration
-- a browser client dependency
-- sync state and error handling
+## Current constraints
 
-If you want, the next step can be a Supabase-backed version of this same app with:
+- split support is limited to Upper / Lower / Push / Pull
+- there is no backend other than optional Supabase
+- the app is intentionally single-file and dependency-light
+- the UI is optimized for phone-sized screens first
 
-1. email magic-link sign-in
-2. one-row-per-user JSON persistence
-3. local draft cache plus cloud sync
+## Recommended next upgrades
 
-## AI exercise selection
+If you want a stronger second version, the best next steps are:
 
-The app includes an Anthropic fetch path, but on a normal public Cloudflare Pages site there is no safe way to embed a private Anthropic API key in frontend code.
-
-So the app is built to:
-
-- try the Anthropic path only if a browser-side key is explicitly provided
-- otherwise fall back automatically to the built-in exercise library
-
-For a private personal deployment, the fallback library is the default recommended mode.
+1. add a proper export / import backup file flow
+2. add Supabase session status recovery messaging
+3. add explicit cloud conflict resolution UI
+4. split `app.jsx` into components once the product surface stabilizes
