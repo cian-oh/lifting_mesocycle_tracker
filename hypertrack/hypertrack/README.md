@@ -12,10 +12,15 @@ The app is designed to reproduce the core practical loop of RP-style hypertrophy
 This repository is intentionally simple:
 
 - static hosting friendly
-- no build step
+- one tiny build step for deploy-time config injection
 - one `index.html`
 - one `app.jsx`
+- one generated `config.js`
 - optional Supabase auth and sync
+
+Cloudflare deployment note:
+
+- the app now supports build-time injection of Supabase public config through `config.js`
 
 ## What the app does
 
@@ -111,6 +116,10 @@ That lets the first resumed workout still produce weight suggestions immediately
   - setup flows
   - session logging
   - Supabase auth and sync
+- `config.js`
+  - browser-readable deploy config
+- `build-config.mjs`
+  - generates `config.js` from Cloudflare Pages environment variables
 
 ## Local persistence
 
@@ -203,16 +212,14 @@ with check (auth.uid() = user_id);
 
 The app exposes a Supabase panel on the welcome screen and home screen.
 
-You enter:
+The clean production flow is:
 
-- Supabase project URL
-- Supabase anon key
-- your email address
-- your password
+- Supabase URL and anon key are injected at deploy time
+- the user only enters email and password
 
 Then:
 
-1. Save config.
+1. Open the app.
 2. Sign up or sign in.
 3. The app restores the session and syncs your mesocycle row.
 
@@ -222,7 +229,7 @@ Before using Supabase auth, configure your project:
 
 1. Enable Email auth in Supabase Auth.
 2. If email confirmation is enabled, add your Cloudflare Pages URL to the allowed site / redirect settings.
-3. Copy the project URL and anon key into the app’s Supabase panel.
+3. Keep your project URL and anon key ready for Cloudflare Pages environment variables.
 
 If you test locally and confirmation emails are enabled, also add your local URL such as:
 
@@ -263,15 +270,23 @@ http://localhost:4173
 
 ## Deploying to Cloudflare Pages
 
-This is a zero-build static app.
+This is now a very small build-time config injection flow.
 
 Use these settings in Cloudflare Pages:
 
 - Framework preset: `None`
-- Build command: leave blank
+- Build command: `node build-config.mjs`
 - Build output directory: `/`
+- Root directory: `hypertrack` if deploying from the monorepo root
 
-That works because the repository is already a fully static frontend.
+Environment variables to add in Cloudflare Pages:
+
+- `HYPERTRACK_SUPABASE_URL`
+- `HYPERTRACK_SUPABASE_ANON_KEY`
+
+These values are public client values. Do not use the Supabase service role key.
+
+With those set, the deployed app will stop asking users for Supabase keys and will only ask for email/password.
 
 ## Uploading to GitHub
 
@@ -281,6 +296,8 @@ If you do not want to sign into GitHub in the laptop browser, the easiest workfl
 2. Upload these files into the repo root:
    - `index.html`
    - `app.jsx`
+   - `config.js`
+   - `build-config.mjs`
    - `README.md`
 3. Connect that repo to Cloudflare Pages.
 

@@ -4,6 +4,7 @@ const STORAGE_KEY = "hypertrack_cian_v1";
 const SUPABASE_CONFIG_KEY = "hypertrack_cian_supabase_v1";
 const SUPABASE_TABLE = "hypertrack_mesos";
 const DEFAULT_INCREMENT = 2.5;
+const DEPLOY_CONFIG = window.__HYPERTRACK_CONFIG__ || {};
 const DAY_TYPES = ["Upper", "Lower", "Push", "Pull"];
 const MUSCLES = [
   "Chest",
@@ -76,17 +77,21 @@ const STEP_LABELS = {
 };
 
 function loadSupabaseConfig() {
+  const deployed = {
+    url: DEPLOY_CONFIG.supabaseUrl || "",
+    anonKey: DEPLOY_CONFIG.supabaseAnonKey || "",
+  };
   try {
     const raw = localStorage.getItem(SUPABASE_CONFIG_KEY);
-    if (!raw) return { url: "", anonKey: "" };
+    if (!raw) return deployed;
     const parsed = JSON.parse(raw);
     return {
-      url: parsed?.url || "",
-      anonKey: parsed?.anonKey || "",
+      url: parsed?.url || deployed.url,
+      anonKey: parsed?.anonKey || deployed.anonKey,
     };
   } catch (error) {
     console.error(error);
-    return { url: "", anonKey: "" };
+    return deployed;
   }
 }
 
@@ -1784,6 +1789,7 @@ function CloudSyncCard({
   onPullCloud,
   onPushCloud,
 }) {
+  const hasHostedConfig = Boolean(initialConfig?.url && initialConfig?.anonKey);
   const [url, setUrl] = useState(initialConfig?.url || "");
   const [anonKey, setAnonKey] = useState(initialConfig?.anonKey || "");
   const [email, setEmail] = useState(cloudUser?.email || "");
@@ -1814,31 +1820,33 @@ function CloudSyncCard({
       <div className="mono tiny muted">
         {cloudStatus}
       </div>
-      <input
-        type="text"
-        value={url}
-        onChange={(event) => setUrl(event.target.value)}
-        placeholder="Supabase project URL"
-      />
-      <input
-        type="text"
-        value={anonKey}
-        onChange={(event) => setAnonKey(event.target.value)}
-        placeholder="Supabase anon key"
-      />
-      <div className="title-row">
-        <button
-          className="btn-ghost"
-          onClick={() => onSaveCloudConfig({ url: url.trim(), anonKey: anonKey.trim() })}
-        >
-          Save Config
-        </button>
-        {cloudUser && (
-          <button className="btn-ghost" onClick={onSignOut}>
-            Sign Out
+      {!hasHostedConfig && (
+        <>
+          <input
+            type="text"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="Supabase project URL"
+          />
+          <input
+            type="text"
+            value={anonKey}
+            onChange={(event) => setAnonKey(event.target.value)}
+            placeholder="Supabase anon key"
+          />
+          <button
+            className="btn-ghost"
+            onClick={() => onSaveCloudConfig({ url: url.trim(), anonKey: anonKey.trim() })}
+          >
+            Save Config
           </button>
-        )}
-      </div>
+        </>
+      )}
+      {hasHostedConfig && (
+        <div className="mono tiny gold">
+          Cloud config loaded from deployment.
+        </div>
+      )}
       <input
         type="email"
         value={email}
@@ -1872,12 +1880,15 @@ function CloudSyncCard({
         </>
       )}
       {cloudUser && (
-        <div className="grid-2">
+        <div className="grid-3">
           <button className="btn-ghost" onClick={onPullCloud}>
             Pull Cloud
           </button>
           <button className="btn-ghost" onClick={onPushCloud} disabled={!hasMeso}>
             Push Current
+          </button>
+          <button className="btn-ghost" onClick={onSignOut}>
+            Sign Out
           </button>
         </div>
       )}
