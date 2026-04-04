@@ -886,7 +886,7 @@ function App() {
       }
       setCloudUser(data.user || null);
       setCloudStatus(
-        data.user ? `Signed in as ${data.user.email}` : "Sign in to use HyperPhases."
+        data.user ? `You are now signed in as ${data.user.email}` : "Sign in to use HyperPhases."
       );
       setAuthReady(true);
     });
@@ -896,7 +896,7 @@ function App() {
       setCloudUser(session?.user || null);
       setCloudStatus(
         session?.user
-          ? `Signed in as ${session.user.email}`
+          ? `You are now signed in as ${session.user.email}`
           : "Sign in to use HyperPhases."
       );
       setAuthReady(true);
@@ -919,8 +919,8 @@ function App() {
       setArchivedMesos(archived);
       setCloudStatus(
         activeMeso
-          ? `Signed in as ${cloudUser.email}`
-          : `Signed in as ${cloudUser.email}. Start your first mesocycle.`
+          ? `You are now signed in as ${cloudUser.email}`
+          : `You are now signed in as ${cloudUser.email}. Start your first mesocycle.`
       );
       setScreen((current) => {
         if (current === "setup" || current === "session") return current;
@@ -1022,7 +1022,7 @@ function App() {
         });
         if (error) throw error;
         if (data?.user && data?.session) {
-          setCloudStatus(`Signed in as ${email}`);
+          setCloudStatus(`You are now signed in as ${email}`);
           setToast("Account created");
         } else {
           setCloudStatus("Account created. Check email confirmation if required.");
@@ -1056,11 +1056,40 @@ function App() {
           password,
         });
         if (error) throw error;
-        setCloudStatus(`Signed in as ${email}`);
+        setCloudStatus(`You are now signed in as ${email}`);
         setToast("Signed in");
       } catch (error) {
         console.error(error);
         setCloudStatus("Sign-in failed");
+      } finally {
+        setCloudBusy(false);
+      }
+    },
+    [cloudConfig]
+  );
+
+  const handleForgotPassword = useCallback(
+    async (email) => {
+      const client = createSupabaseClient(cloudConfig);
+      if (!client) {
+        setCloudStatus("Enter Supabase URL and anon key first");
+        return;
+      }
+      if (!email) {
+        setCloudStatus("Enter your email address to reset your password");
+        return;
+      }
+      try {
+        setCloudBusy(true);
+        const { error } = await client.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin,
+        });
+        if (error) throw error;
+        setCloudStatus(`If that account exists, a password reset email has been sent to ${email}.`);
+        setToast("Password reset email sent");
+      } catch (error) {
+        console.error(error);
+        setCloudStatus("Password reset request failed");
       } finally {
         setCloudBusy(false);
       }
@@ -1078,7 +1107,7 @@ function App() {
       setMeso(null);
       setArchivedMesos([]);
       setCloudUser(null);
-      setCloudStatus("Signed out.");
+      setCloudStatus("You have been signed out.");
       setScreen("auth");
     } catch (error) {
       console.error(error);
@@ -1236,6 +1265,7 @@ function App() {
           onSaveCloudConfig={handleSaveCloudConfig}
           onSignUp={handleSignUp}
           onSignIn={handleSignIn}
+          onForgotPassword={handleForgotPassword}
         />
       )}
       {screen === "welcome" && (
@@ -1353,6 +1383,7 @@ function App() {
           onSaveCloudConfig={handleSaveCloudConfig}
           onSignUp={handleSignUp}
           onSignIn={handleSignIn}
+          onForgotPassword={handleForgotPassword}
           onSignOut={handleSignOut}
           onRefresh={loadUserMesos}
           onOpenArchive={() => {
@@ -2493,6 +2524,7 @@ function AccountSheet({
   onSaveCloudConfig,
   onSignUp,
   onSignIn,
+  onForgotPassword,
   onSignOut,
   onRefresh,
   onOpenArchive,
@@ -2522,6 +2554,7 @@ function AccountSheet({
           onSaveCloudConfig={onSaveCloudConfig}
           onSignUp={onSignUp}
           onSignIn={onSignIn}
+          onForgotPassword={onForgotPassword}
           onSignOut={onSignOut}
           onRefresh={onRefresh}
           onOpenArchive={onOpenArchive}
@@ -2541,6 +2574,7 @@ function AuthScreen({
   onSaveCloudConfig,
   onSignUp,
   onSignIn,
+  onForgotPassword,
 }) {
   return (
     <div className="centered stack" style={{ gap: 18 }}>
@@ -2564,6 +2598,7 @@ function AuthScreen({
         onSaveCloudConfig={onSaveCloudConfig}
         onSignUp={onSignUp}
         onSignIn={onSignIn}
+        onForgotPassword={onForgotPassword}
         onSignOut={() => {}}
         onRefresh={() => {}}
         onOpenArchive={() => {}}
@@ -2582,6 +2617,7 @@ function CloudSyncCard({
   onSaveCloudConfig,
   onSignUp,
   onSignIn,
+  onForgotPassword,
   onSignOut,
   onRefresh,
   onOpenArchive,
@@ -2592,7 +2628,7 @@ function CloudSyncCard({
   const [anonKey, setAnonKey] = useState(initialConfig?.anonKey || "");
   const [email, setEmail] = useState(cloudUser?.email || "");
   const [password, setPassword] = useState("");
-  const accountTitle = cloudUser ? "Your training is connected" : "Sign in to start tracking";
+  const accountTitle = cloudUser ? `You are now signed in as ${cloudUser.email}` : "Sign in to start tracking";
   const accountSummary = cloudUser
     ? "Your active mesocycle and archive live in your account, so your state stays consistent across devices."
     : "Sign in before planning or logging so HyperPhases always opens to the right account state.";
@@ -2653,6 +2689,15 @@ function CloudSyncCard({
             onChange={(event) => setPassword(event.target.value)}
             placeholder="Password"
           />
+          <div className="title-row" style={{ justifyContent: "flex-end" }}>
+            <button
+              className="text-action"
+              disabled={cloudBusy || !email.trim()}
+              onClick={() => onForgotPassword(email.trim())}
+            >
+              Forgot password?
+            </button>
+          </div>
           <div className="grid-2">
             <button
               className="btn-ghost"
