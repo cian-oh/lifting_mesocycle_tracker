@@ -1,6 +1,6 @@
-# HyperTrack
+# HyperPhases
 
-HyperTrack is a mobile-first hypertrophy tracker built around customizable mesocycle planning, RIR-based progression, and feedback-driven volume adjustment. The current design direction is brighter and cleaner, with a more polished product feel and support for multiple popular split templates.
+HyperPhases is a mobile-first hypertrophy tracker built around customizable mesocycle planning, RIR-based progression, and feedback-driven volume adjustment. The current design direction is brighter and cleaner, with a more polished product feel and support for multiple popular split templates.
 
 The app is designed to reproduce the core practical loop of RP-style hypertrophy tracking without a subscription:
 
@@ -23,7 +23,7 @@ Cloudflare deployment note:
 
 ## What the app does
 
-HyperTrack supports:
+HyperPhases supports:
 
 - fresh mesocycle setup
 - resume-mid-meso setup with seed performance data
@@ -52,7 +52,7 @@ HyperTrack supports:
 
 ### Weight progression
 
-For each exercise, HyperTrack looks at the last completed set it can find for that movement.
+For each exercise, HyperPhases looks at the last completed set it can find for that movement.
 
 - If actual RIR was above target, load increases.
 - If actual RIR was below target, load decreases slightly.

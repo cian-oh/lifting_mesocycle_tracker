@@ -1140,7 +1140,7 @@ function LoadingScreen() {
       <div className="card stack">
         <div className="eyebrow">// loading</div>
         <div className="display" style={{ fontSize: 54, lineHeight: 0.9 }}>
-          Hyper<span className="accent">Track</span>
+          Hyper<span className="accent">Phases</span>
         </div>
       </div>
     </div>
@@ -1175,7 +1175,7 @@ function WelcomeScreen({
         <div className="display" style={{ fontSize: 104, lineHeight: 0.82 }}>
           Hyper
           <br />
-          <span className="accent">Track</span>
+          <span className="accent">Phases</span>
         </div>
         <div className="hero-subtitle">
           A cleaner, faster way to run a hypertrophy mesocycle with RIR-based load progression and feedback-led volume management.
@@ -2028,7 +2028,7 @@ function HomeScreen({
             <div>
               <button className="brand-button" onClick={onGoHome} aria-label="Return to home">
                 <div className="display" style={{ fontSize: 42, lineHeight: 0.9 }}>
-                  Hyper<span className="accent">Track</span>
+                  Hyper<span className="accent">Phases</span>
                 </div>
               </button>
               <div className="mono tiny gold">
