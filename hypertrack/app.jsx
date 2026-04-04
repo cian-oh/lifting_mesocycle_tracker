@@ -4,6 +4,7 @@ const STORAGE_KEY = "hypertrack_cian_v1";
 const SUPABASE_CONFIG_KEY = "hypertrack_cian_supabase_v1";
 const SUPABASE_TABLE = "hypertrack_mesos";
 const DEFAULT_INCREMENT = 2.5;
+const DEFAULT_UNIT = "kg";
 const DEPLOY_CONFIG = window.__HYPERTRACK_CONFIG__ || {};
 const MUSCLES = [
   "Chest",
@@ -120,6 +121,7 @@ const DEFAULT_EQUIPMENT = [
   "Cable machine",
   "Machines",
 ];
+const UNIT_OPTIONS = ["kg", "lb"];
 const FEEDBACK_OPTIONS = {
   pump: [
     { value: 0, label: "😴 None" },
@@ -170,84 +172,84 @@ function saveSupabaseConfig(config) {
 
 const EQUIPMENT_EXERCISES = {
   Chest: {
-    "Barbell & rack": ["Bench Press", "Incline Bench Press", "Paused Bench Press"],
-    Dumbbells: ["DB Flat Press", "DB Incline Press", "DB Fly"],
-    "Cable machine": ["Cable Fly", "High-to-Low Crossover", "Single-Arm Press"],
-    Machines: ["Chest Press", "Pec Deck", "Incline Press Machine"],
-    "Smith machine": ["Smith Incline Press", "Smith Flat Press"],
-    "Bodyweight only": ["Push-Up", "Deficit Push-Up", "Feet-Elevated Push-Up"],
+    "Barbell & rack": ["Bench Press", "Incline Bench Press", "Paused Bench Press", "Spoto Press", "Floor Press"],
+    Dumbbells: ["DB Flat Press", "DB Incline Press", "DB Fly", "Neutral-Grip DB Press", "Decline DB Press"],
+    "Cable machine": ["Cable Fly", "High-to-Low Crossover", "Single-Arm Press", "Low-to-High Cable Fly", "Cable Press"],
+    Machines: ["Chest Press", "Pec Deck", "Incline Press Machine", "Plate-Loaded Chest Press", "Iso-Lateral Chest Press"],
+    "Smith machine": ["Smith Incline Press", "Smith Flat Press", "Smith Close-Grip Incline Press"],
+    "Bodyweight only": ["Push-Up", "Deficit Push-Up", "Feet-Elevated Push-Up", "Ring Push-Up", "Tempo Push-Up"],
   },
   Back: {
-    "Barbell & rack": ["Barbell Row", "Pendlay Row", "Rack Pull"],
-    Dumbbells: ["DB Row", "Chest-Supported DB Row", "Meadows Row"],
-    "Cable machine": ["Lat Pulldown", "Seated Cable Row", "Straight-Arm Pulldown"],
-    Machines: ["Machine Row", "Hammer Row", "High Row Machine"],
+    "Barbell & rack": ["Barbell Row", "Pendlay Row", "Rack Pull", "Landmine Row", "Seal Row"],
+    Dumbbells: ["DB Row", "Chest-Supported DB Row", "Meadows Row", "Incline Bench DB Row", "Kroc Row"],
+    "Cable machine": ["Lat Pulldown", "Seated Cable Row", "Straight-Arm Pulldown", "Single-Arm Cable Row", "Neutral-Grip Pulldown"],
+    Machines: ["Machine Row", "Hammer Row", "High Row Machine", "T-Bar Row", "Chest-Supported T-Bar Row", "Assisted Pull-Up"],
     "Smith machine": ["Smith Row"],
-    "Bodyweight only": ["Inverted Row", "Towel Row"],
+    "Bodyweight only": ["Inverted Row", "Towel Row", "Pull-Up", "Chin-Up", "Table Row"],
   },
   Shoulders: {
-    "Barbell & rack": ["Barbell OHP", "Push Press"],
-    Dumbbells: ["DB Lateral Raise", "Arnold Press", "Seated DB Press"],
-    "Cable machine": ["Cable Lateral Raise", "Face Pull", "Cable Y-Raise"],
-    Machines: ["Shoulder Press Machine", "Lateral Raise Machine"],
+    "Barbell & rack": ["Barbell OHP", "Push Press", "Behind-the-Neck Press"],
+    Dumbbells: ["DB Lateral Raise", "Arnold Press", "Seated DB Press", "Lean-Away Lateral Raise", "DB Front Raise"],
+    "Cable machine": ["Cable Lateral Raise", "Face Pull", "Cable Y-Raise", "Dual Cable Lateral Raise", "Cable Front Raise"],
+    Machines: ["Shoulder Press Machine", "Lateral Raise Machine", "Machine OHP"],
     "Smith machine": ["Smith High Incline Press"],
     "Bodyweight only": ["Pike Push-Up", "Handstand Push-Up Progression"],
   },
   Biceps: {
-    "Barbell & rack": ["Barbell Curl", "EZ-Bar Curl"],
-    Dumbbells: ["Alternating DB Curl", "Hammer Curl", "Incline DB Curl"],
-    "Cable machine": ["Cable Curl", "Bayesian Curl", "Rope Hammer Curl"],
-    Machines: ["Preacher Curl Machine", "Biceps Curl Machine"],
+    "Barbell & rack": ["Barbell Curl", "EZ-Bar Curl", "Drag Curl"],
+    Dumbbells: ["Alternating DB Curl", "Hammer Curl", "Incline DB Curl", "Spider Curl", "Cross-Body Hammer Curl"],
+    "Cable machine": ["Cable Curl", "Bayesian Curl", "Rope Hammer Curl", "High Cable Curl", "Single-Arm Cable Curl"],
+    Machines: ["Preacher Curl Machine", "Biceps Curl Machine", "Machine Preacher Curl"],
     "Smith machine": ["Smith Drag Curl"],
     "Bodyweight only": ["Towel Curl Iso", "Chin-Up Negative"],
   },
   Triceps: {
-    "Barbell & rack": ["Close-Grip Bench Press", "Skull Crusher"],
-    Dumbbells: ["DB Skull Crusher", "Overhead DB Extension", "Tate Press"],
-    "Cable machine": ["Rope Pushdown", "Overhead Cable Extension", "Straight-Bar Pushdown"],
-    Machines: ["Dip Machine", "Triceps Extension Machine"],
+    "Barbell & rack": ["Close-Grip Bench Press", "Skull Crusher", "JM Press"],
+    Dumbbells: ["DB Skull Crusher", "Overhead DB Extension", "Tate Press", "Rolling DB Extension"],
+    "Cable machine": ["Rope Pushdown", "Overhead Cable Extension", "Straight-Bar Pushdown", "Single-Arm Pushdown", "Cross-Body Cable Extension"],
+    Machines: ["Dip Machine", "Triceps Extension Machine", "Assisted Dip"],
     "Smith machine": ["Smith Close-Grip Bench"],
-    "Bodyweight only": ["Bench Dip", "Diamond Push-Up"],
+    "Bodyweight only": ["Bench Dip", "Diamond Push-Up", "Bodyweight Triceps Extension"],
   },
   Quads: {
-    "Barbell & rack": ["Back Squat", "Front Squat", "High-Bar Squat"],
-    Dumbbells: ["Goblet Squat", "Bulgarian Split Squat", "DB Reverse Lunge"],
-    "Cable machine": ["Cable Squat", "Cable Split Squat"],
-    Machines: ["Leg Press", "Leg Extension", "Hack Squat"],
-    "Smith machine": ["Smith Squat", "Smith Split Squat"],
-    "Bodyweight only": ["Walking Lunge", "Sissy Squat", "Tempo Squat"],
+    "Barbell & rack": ["Back Squat", "Front Squat", "High-Bar Squat", "Paused Squat", "Zercher Squat"],
+    Dumbbells: ["Goblet Squat", "Bulgarian Split Squat", "DB Reverse Lunge", "DB Step-Up", "Heel-Elevated Goblet Squat"],
+    "Cable machine": ["Cable Squat", "Cable Split Squat", "Cable Reverse Lunge"],
+    Machines: ["Leg Press", "Leg Extension", "Hack Squat", "Pendulum Squat", "Belt Squat"],
+    "Smith machine": ["Smith Squat", "Smith Split Squat", "Smith Cyclist Squat"],
+    "Bodyweight only": ["Walking Lunge", "Sissy Squat", "Tempo Squat", "Split Squat", "Step-Up"],
   },
   Hamstrings: {
-    "Barbell & rack": ["Romanian Deadlift", "Good Morning", "Stiff-Leg Deadlift"],
-    Dumbbells: ["DB Romanian Deadlift", "Single-Leg RDL"],
-    "Cable machine": ["Cable Leg Curl", "Cable Pull-Through"],
-    Machines: ["Lying Leg Curl", "Seated Leg Curl", "Nordic Curl Machine"],
+    "Barbell & rack": ["Romanian Deadlift", "Good Morning", "Stiff-Leg Deadlift", "Snatch-Grip RDL"],
+    Dumbbells: ["DB Romanian Deadlift", "Single-Leg RDL", "DB Good Morning"],
+    "Cable machine": ["Cable Leg Curl", "Cable Pull-Through", "Single-Leg Cable Curl"],
+    Machines: ["Lying Leg Curl", "Seated Leg Curl", "Nordic Curl Machine", "Glute Ham Raise"],
     "Smith machine": ["Smith Romanian Deadlift"],
-    "Bodyweight only": ["Nordic Curl", "Sliding Leg Curl"],
+    "Bodyweight only": ["Nordic Curl", "Sliding Leg Curl", "Single-Leg Sliding Curl"],
   },
   Glutes: {
-    "Barbell & rack": ["Barbell Hip Thrust", "Barbell Lunge"],
-    Dumbbells: ["DB Hip Thrust", "DB Step-Up", "DB Walking Lunge"],
-    "Cable machine": ["Cable Kickback", "Cable Pull-Through", "Cable Abduction"],
-    Machines: ["Hip Thrust Machine", "Glute Drive", "Abduction Machine"],
-    "Smith machine": ["Smith Hip Thrust", "Smith Reverse Lunge"],
-    "Bodyweight only": ["Single-Leg Glute Bridge", "Frog Pump", "Step-Up"],
+    "Barbell & rack": ["Barbell Hip Thrust", "Barbell Lunge", "Barbell Glute Bridge", "Deficit Reverse Lunge"],
+    Dumbbells: ["DB Hip Thrust", "DB Step-Up", "DB Walking Lunge", "DB Bulgarian Split Squat"],
+    "Cable machine": ["Cable Kickback", "Cable Pull-Through", "Cable Abduction", "Cable Reverse Lunge"],
+    Machines: ["Hip Thrust Machine", "Glute Drive", "Abduction Machine", "45-Degree Back Extension"],
+    "Smith machine": ["Smith Hip Thrust", "Smith Reverse Lunge", "Smith Split Squat"],
+    "Bodyweight only": ["Single-Leg Glute Bridge", "Frog Pump", "Step-Up", "Skater Squat"],
   },
   Calves: {
-    "Barbell & rack": ["Standing Calf Raise", "Donkey Calf Raise"],
-    Dumbbells: ["Single-Leg DB Calf Raise", "Seated DB Calf Raise"],
+    "Barbell & rack": ["Standing Calf Raise", "Donkey Calf Raise", "Seated Barbell Calf Raise"],
+    Dumbbells: ["Single-Leg DB Calf Raise", "Seated DB Calf Raise", "Farmer Calf Raise"],
     "Cable machine": ["Cable Calf Raise"],
-    Machines: ["Standing Calf Machine", "Seated Calf Machine", "Leg Press Calf Raise"],
+    Machines: ["Standing Calf Machine", "Seated Calf Machine", "Leg Press Calf Raise", "Donkey Calf Machine"],
     "Smith machine": ["Smith Standing Calf Raise"],
-    "Bodyweight only": ["Single-Leg Calf Raise", "Tempo Calf Raise"],
+    "Bodyweight only": ["Single-Leg Calf Raise", "Tempo Calf Raise", "Bent-Knee Calf Raise"],
   },
   "Rear Delts": {
-    "Barbell & rack": ["Rear Delt Row", "Wide-Grip Row"],
-    Dumbbells: ["Reverse Fly", "Chest-Supported Rear Delt Raise"],
-    "Cable machine": ["Face Pull", "Cable Rear Delt Fly", "Cable Y-Raise"],
-    Machines: ["Reverse Pec Deck", "Rear Delt Machine"],
+    "Barbell & rack": ["Rear Delt Row", "Wide-Grip Row", "Snatch-Grip High Pull"],
+    Dumbbells: ["Reverse Fly", "Chest-Supported Rear Delt Raise", "Incline Rear Delt Swing"],
+    "Cable machine": ["Face Pull", "Cable Rear Delt Fly", "Cable Y-Raise", "Cross-Body Rear Delt Fly"],
+    Machines: ["Reverse Pec Deck", "Rear Delt Machine", "Chest-Supported Reverse Fly"],
     "Smith machine": ["Smith High Row"],
-    "Bodyweight only": ["Prone Y-Raise", "Wall Rear Delt Raise"],
+    "Bodyweight only": ["Prone Y-Raise", "Wall Rear Delt Raise", "Reverse Snow Angel"],
   },
 };
 
@@ -330,6 +332,14 @@ function formatKg(value) {
   return Number.isInteger(parsed) ? `${parsed}` : parsed.toFixed(1);
 }
 
+function getUnitLabel(unit) {
+  return unit === "lb" ? "lb" : "kg";
+}
+
+function getUnitStep(unit) {
+  return unit === "lb" ? 1 : 0.5;
+}
+
 function targetRIRForWeek(week) {
   if (week <= 1) return 3;
   if (week <= 3) return 2;
@@ -367,6 +377,16 @@ function getAvailableExercises(muscle, equipment) {
     list.push(...Object.values(EQUIPMENT_EXERCISES[muscle] || {}).flat().slice(0, 3));
   }
   return list;
+}
+
+function getAllExerciseOptions(muscle) {
+  return Array.from(
+    new Set(Object.values(EQUIPMENT_EXERCISES[muscle] || {}).flat())
+  ).sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeExerciseName(name) {
+  return (name || "").replace(/\s+/g, " ").trim();
 }
 
 function getRecommendedExercisePlan(equipment) {
@@ -1081,6 +1101,7 @@ function App() {
         <IncrementModal
           current={incrementTarget.currentInc}
           exerciseName={incrementTarget.exerciseName}
+          unit={meso?.unit || DEFAULT_UNIT}
           onClose={() => setIncrementTarget(null)}
           onSave={(value) =>
             handleIncrementSave(
@@ -1233,6 +1254,7 @@ function SetupScreen({ onComplete, onCancel }) {
   const [mode, setMode] = useState("choose");
   const [step, setStep] = useState(0);
   const [equipment, setEquipment] = useState(DEFAULT_EQUIPMENT);
+  const [unit, setUnit] = useState(DEFAULT_UNIT);
   const [weeks, setWeeks] = useState(6);
   const [exercises, setExercises] = useState(() => getRecommendedExercisePlan(DEFAULT_EQUIPMENT));
   const [incrementsSetup, setIncrementsSetup] = useState(() =>
@@ -1252,8 +1274,11 @@ function SetupScreen({ onComplete, onCancel }) {
   const [selectedPresetKey, setSelectedPresetKey] = useState(SPLIT_PRESETS[0].key);
   const [splitName, setSplitName] = useState(SPLIT_PRESETS[0].name);
   const [splitDays, setSplitDays] = useState(() => instantiatePreset(SPLIT_PRESETS[0].key).daySlots);
+  const [exerciseDrafts, setExerciseDrafts] = useState({});
   const normalizedSplitDays = normalizeDaySlots(splitDays);
   const activeMuscles = getActiveMusclesFromSlots(normalizedSplitDays);
+  const unitLabel = getUnitLabel(unit);
+  const unitStep = getUnitStep(unit);
 
   const visualStep =
     mode === "fresh"
@@ -1339,21 +1364,32 @@ function SetupScreen({ onComplete, onCancel }) {
   };
 
   const toggleExercise = (muscle, exercise) => {
+    const normalizedExercise = normalizeExerciseName(exercise);
+    if (!normalizedExercise) return;
     setExercises((current) => {
       const selected = current[muscle] || [];
-      const active = selected.includes(exercise);
+      const active = selected.includes(normalizedExercise);
       let next = selected;
       if (active) {
-        next = selected.filter((item) => item !== exercise);
+        next = selected.filter((item) => item !== normalizedExercise);
       } else if (selected.length < 3) {
-        next = [...selected, exercise];
+        next = [...selected, normalizedExercise];
       }
       return { ...current, [muscle]: next };
     });
     setIncrementsSetup((current) => ({
       ...current,
-      [exercise]: current[exercise] || DEFAULT_INCREMENT,
+      [normalizedExercise]: current[normalizedExercise] || DEFAULT_INCREMENT,
     }));
+  };
+
+  const addExerciseOption = (muscle) => {
+    const draft = normalizeExerciseName(exerciseDrafts[muscle]);
+    if (!draft) return;
+    const canonical =
+      getAllExerciseOptions(muscle).find((item) => item.toLowerCase() === draft.toLowerCase()) || draft;
+    toggleExercise(muscle, canonical);
+    setExerciseDrafts((current) => ({ ...current, [muscle]: "" }));
   };
 
   const createFreshMeso = async () => {
@@ -1375,6 +1411,7 @@ function SetupScreen({ onComplete, onCancel }) {
         daySlots,
       },
       equipment,
+      unit,
       exercises: normalizedExercises,
       weeklyVolume: weeklyVol,
       increments: normalizedIncrements,
@@ -1403,6 +1440,7 @@ function SetupScreen({ onComplete, onCancel }) {
         daySlots,
       },
       equipment,
+      unit,
       exercises: normalizedExercises,
       weeklyVolume: calcVolumeForWeek(resumeWeek, weeks),
       increments: normalizedIncrements,
@@ -1493,6 +1531,22 @@ function SetupScreen({ onComplete, onCancel }) {
             >
               <span className="display" style={{ fontSize: 24 }}>
                 {option}W
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="stack">
+        <div className="label tiny gold">load unit</div>
+        <div className="grid-2">
+          {UNIT_OPTIONS.map((option) => (
+            <button
+              key={option}
+              className={`pill-btn gold ${unit === option ? "active" : ""}`}
+              onClick={() => setUnit(option)}
+            >
+              <span className="display" style={{ fontSize: 24 }}>
+                {option.toUpperCase()}
               </span>
             </button>
           ))}
@@ -1607,7 +1661,9 @@ function SetupScreen({ onComplete, onCancel }) {
       </div>
       {activeMuscles.map((muscle) => {
         const options = getAvailableExercises(muscle, equipment);
+        const allOptions = getAllExerciseOptions(muscle);
         const selected = exercises[muscle] || [];
+        const displayOptions = Array.from(new Set([...selected, ...options]));
         return (
           <div key={muscle} className="card stack">
             <div className="title-row">
@@ -1617,7 +1673,7 @@ function SetupScreen({ onComplete, onCancel }) {
               <div className="mono tiny gold">{selected.length} / 3</div>
             </div>
             <div className="stack">
-              {options.map((exercise) => {
+              {displayOptions.map((exercise) => {
                 const active = selected.includes(exercise);
                 return (
                   <div key={exercise} className="stack">
@@ -1632,7 +1688,9 @@ function SetupScreen({ onComplete, onCancel }) {
                       <div className="inset" style={{ padding: 12 }}>
                         <div className="title-row" style={{ marginBottom: 8 }}>
                           <div className="label tiny gold">inc</div>
-                          <div className="mono tiny">{formatKg(incrementsSetup[exercise] || DEFAULT_INCREMENT)} kg</div>
+                          <div className="mono tiny">
+                            {formatKg(incrementsSetup[exercise] || DEFAULT_INCREMENT)} {unitLabel}
+                          </div>
                         </div>
                         <div className="grid-3" style={{ marginBottom: 8 }}>
                           {[1, 2.5, 5, 10, 15, 20].map((value) => (
@@ -1654,7 +1712,7 @@ function SetupScreen({ onComplete, onCancel }) {
                         <input
                           type="number"
                           min="0.5"
-                          step="0.5"
+                          step={unitStep}
                           value={incrementsSetup[exercise] || ""}
                           onChange={(event) =>
                             setIncrementsSetup((current) => ({
@@ -1662,13 +1720,37 @@ function SetupScreen({ onComplete, onCancel }) {
                               [exercise]: event.target.value === "" ? "" : Number(event.target.value),
                             }))
                           }
-                          placeholder="Custom kg increment"
+                          placeholder={`Custom ${unitLabel} increment`}
                         />
                       </div>
                     )}
                   </div>
                 );
               })}
+              <div className="inset stack" style={{ padding: 12 }}>
+                <div className="label tiny gold">add exercise</div>
+                <input
+                  list={`exercise-library-${muscle}`}
+                  value={exerciseDrafts[muscle] || ""}
+                  onChange={(event) =>
+                    setExerciseDrafts((current) => ({ ...current, [muscle]: event.target.value }))
+                  }
+                  placeholder={`Type or choose a ${muscle} exercise`}
+                />
+                <datalist id={`exercise-library-${muscle}`}>
+                  {allOptions.map((exercise) => (
+                    <option key={`${muscle}-${exercise}`} value={exercise} />
+                  ))}
+                </datalist>
+                <div className="title-row" style={{ alignItems: "center" }}>
+                  <div className="tiny muted">
+                    Missing something specific? Add it here and set the increment now or later in-session.
+                  </div>
+                  <button className="btn-ghost" onClick={() => addExerciseOption(muscle)}>
+                    Add
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         );
@@ -1788,8 +1870,8 @@ function SetupScreen({ onComplete, onCancel }) {
             <div className="grid-3">
               <input
                 type="number"
-                step="0.5"
-                placeholder="KG"
+                step={unitStep}
+                placeholder={unitLabel.toUpperCase()}
                 value={value.weight}
                 onChange={(event) =>
                   setPrevWeights((current) => ({
@@ -2244,6 +2326,8 @@ function SessionScreen({
   const muscles = Object.keys(sessionState.log || {});
   const allDone = muscles.every((muscle) => isMuscleDone(sessionState, muscle));
   const allRated = muscles.every((muscle) => isMuscleRated(sessionState, muscle));
+  const unitLabel = getUnitLabel(meso?.unit);
+  const unitStep = getUnitStep(meso?.unit);
 
   const updateSet = (muscle, exIdx, setIdx, field, value) => {
     setSessionState((current) => ({
@@ -2350,7 +2434,7 @@ function SessionScreen({
                       className="badge"
                       onClick={() => onEditIncrement(muscle, exIdx, block.increment, block.exercise)}
                     >
-                      ±{formatKg(block.increment)}kg
+                      ±{formatKg(block.increment)}{unitLabel}
                     </button>
                     <button className="btn-ghost" onClick={() => onSwap(muscle, exIdx)}>
                       swap
@@ -2359,7 +2443,7 @@ function SessionScreen({
                 </div>
                 <div className="session-grid header">
                   <div>#</div>
-                  <div>KG</div>
+                  <div>{unitLabel.toUpperCase()}</div>
                   <div>REPS</div>
                   <div>RIR</div>
                   <div>✓</div>
@@ -2369,7 +2453,7 @@ function SessionScreen({
                     <div className="mono tiny gold">{setIdx + 1}</div>
                     <input
                       type="number"
-                      step="0.5"
+                      step={unitStep}
                       value={set.weight}
                       onChange={(event) => updateSet(muscle, exIdx, setIdx, "weight", event.target.value)}
                     />
@@ -2478,7 +2562,15 @@ function FeedbackGroup({ title, options, value, onSelect }) {
 }
 
 function SwapModal({ meso, muscle, current, onClose, onSwap }) {
-  const options = getAvailableExercises(muscle, meso.equipment);
+  const options = Array.from(new Set([current, ...getAllExerciseOptions(muscle)]));
+  const [draft, setDraft] = useState("");
+  const addCustomSwap = () => {
+    const normalized = normalizeExerciseName(draft);
+    if (!normalized) return;
+    const canonical =
+      options.find((item) => item.toLowerCase() === normalized.toLowerCase()) || normalized;
+    onSwap(canonical);
+  };
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="sheet stack" onClick={(event) => event.stopPropagation()}>
@@ -2500,6 +2592,23 @@ function SwapModal({ meso, muscle, current, onClose, onSwap }) {
           <div className="small">
             Swapping mid-meso resets the RIR baseline for this movement. RP-style advice is to keep exercises stable across the full mesocycle when possible.
           </div>
+        </div>
+        <div className="inset stack" style={{ padding: 12 }}>
+          <div className="label tiny gold">pick or add exercise</div>
+          <input
+            list={`swap-library-${muscle}`}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={`Type or choose a ${muscle} exercise`}
+          />
+          <datalist id={`swap-library-${muscle}`}>
+            {options.map((exercise) => (
+              <option key={`${muscle}-swap-${exercise}`} value={exercise} />
+            ))}
+          </datalist>
+          <button className="btn-ghost" onClick={addCustomSwap}>
+            Use This Exercise
+          </button>
         </div>
         {options.map((exercise) => {
           const active = exercise === current;
@@ -2524,8 +2633,10 @@ function SwapModal({ meso, muscle, current, onClose, onSwap }) {
   );
 }
 
-function IncrementModal({ current, exerciseName, onClose, onSave }) {
+function IncrementModal({ current, exerciseName, unit, onClose, onSave }) {
   const [value, setValue] = useState(current || DEFAULT_INCREMENT);
+  const unitLabel = getUnitLabel(unit);
+  const unitStep = getUnitStep(unit);
   const valid = Number(value) > 0;
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -2560,10 +2671,10 @@ function IncrementModal({ current, exerciseName, onClose, onSave }) {
         <input
           type="number"
           min="0.5"
-          step="0.5"
+          step={unitStep}
           value={value}
           onChange={(event) => setValue(event.target.value === "" ? "" : Number(event.target.value))}
-          placeholder="Custom kg increment"
+          placeholder={`Custom ${unitLabel} increment`}
         />
         <button className="btn-primary" onClick={() => valid && onSave(Number(value))} disabled={!valid}>
           Save Increment

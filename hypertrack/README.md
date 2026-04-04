@@ -27,8 +27,11 @@ HyperTrack supports:
 
 - fresh mesocycle setup
 - resume-mid-meso setup with seed performance data
-- exercise selection by muscle group
+- exercise selection by muscle group with built-in recommendations
+- custom exercise entry when a movement is missing from the suggested list
+- load unit selection in `kg` or `lb`
 - per-exercise weight increment configuration
+- later in-session increment edits when you finally know what the gym setup allows
 - set-by-set workout logging
 - inline muscle feedback collection
 - automatic weekly volume adjustment
