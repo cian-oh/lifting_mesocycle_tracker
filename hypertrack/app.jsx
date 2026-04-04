@@ -10,6 +10,7 @@ const MIN_SUPPORT_AMOUNT_EUR = 1;
 const MAX_SUPPORT_AMOUNT_EUR = 500;
 const DEFAULT_INCREMENT = 2.5;
 const DEFAULT_UNIT = "kg";
+const BODYWEIGHT_METADATA_KEY = "hyperphases_profile";
 const DEPLOY_CONFIG = window.__HYPERTRACK_CONFIG__ || {};
 const MUSCLES = [
   "Chest",
@@ -151,6 +152,7 @@ const STEP_LABELS = {
   fresh: [0, 1, 2],
   resume: [0, 1, 2, 3],
 };
+const BODYWEIGHT_EXERCISES = new Set(["Pull-Up", "Dip"]);
 
 function loadSupabaseConfig() {
   const deployed = {
@@ -182,7 +184,7 @@ const EQUIPMENT_EXERCISES = {
     "Cable machine": ["Cable Fly", "High-to-Low Crossover", "Single-Arm Press", "Low-to-High Cable Fly", "Cable Press"],
     Machines: ["Chest Press", "Pec Deck", "Incline Press Machine", "Plate-Loaded Chest Press", "Iso-Lateral Chest Press"],
     "Smith machine": ["Smith Incline Press", "Smith Flat Press", "Smith Close-Grip Incline Press"],
-    "Bodyweight only": ["Push-Up", "Deficit Push-Up", "Feet-Elevated Push-Up", "Ring Push-Up", "Tempo Push-Up"],
+    "Bodyweight only": ["Dip", "Push-Up", "Deficit Push-Up", "Feet-Elevated Push-Up", "Ring Push-Up", "Tempo Push-Up"],
   },
   Back: {
     "Barbell & rack": ["Barbell Row", "Pendlay Row", "Rack Pull", "Landmine Row", "Seal Row"],
@@ -343,6 +345,41 @@ function getUnitLabel(unit) {
 
 function getUnitStep(unit) {
   return unit === "lb" ? 1 : 0.5;
+}
+
+function normalizeBodyweightValue(value) {
+  if (value === "" || value == null) return "";
+  const parsed = Number(value);
+  if (Number.isNaN(parsed) || parsed <= 0) return "";
+  return roundToStep(parsed, 0.5);
+}
+
+function convertWeightUnit(value, fromUnit, toUnit) {
+  if (value === "" || value == null || Number.isNaN(Number(value))) return "";
+  if (fromUnit === toUnit) return roundToStep(Number(value), getUnitStep(toUnit));
+  const kgValue = fromUnit === "lb" ? Number(value) / 2.2046226218 : Number(value);
+  const converted = toUnit === "lb" ? kgValue * 2.2046226218 : kgValue;
+  return roundToStep(converted, getUnitStep(toUnit));
+}
+
+function getBodyweightProfile(user) {
+  const profile = user?.user_metadata?.[BODYWEIGHT_METADATA_KEY] || {};
+  const value = normalizeBodyweightValue(profile.currentBodyweight);
+  const unit = UNIT_OPTIONS.includes(profile.bodyweightUnit) ? profile.bodyweightUnit : DEFAULT_UNIT;
+  return {
+    currentBodyweight: value,
+    bodyweightUnit: unit,
+  };
+}
+
+function getCurrentBodyweightForUnit(user, unit) {
+  const profile = getBodyweightProfile(user);
+  if (profile.currentBodyweight === "") return "";
+  return formatKg(convertWeightUnit(profile.currentBodyweight, profile.bodyweightUnit, unit));
+}
+
+function isBodyweightExercise(exerciseName) {
+  return BODYWEIGHT_EXERCISES.has(exerciseName);
 }
 
 function targetRIRForWeek(week) {
@@ -643,32 +680,40 @@ function createSyntheticSession(daySlot, week) {
   };
 }
 
-function buildSessionState(meso, daySlotId) {
+function buildSessionState(meso, daySlotId, cloudUser) {
   const daySlot = getSlotById(meso, daySlotId);
   if (!daySlot) return null;
   const muscles = daySlot.muscles;
   const log = {};
   const targetRIR = targetRIRForWeek(meso.week);
+  const currentBodyweight = getCurrentBodyweightForUnit(cloudUser, meso.unit || DEFAULT_UNIT);
   muscles.forEach((muscle) => {
     const selected = meso.exercises[muscle] || [];
     if (!selected.length) return;
     const setsPerExercise = Math.max(2, Math.round((meso.weeklyVolume[muscle] || MEV_MRV[muscle][0]) / Math.max(1, selected.length)));
     log[muscle] = selected.map((exercise) => {
       const increment = meso.increments[exercise] || DEFAULT_INCREMENT;
-      const suggestedWeight = calcNextWeight({
-        sessions: meso.sessions,
-        muscle,
-        exerciseName: exercise,
-        increment,
-        week: meso.week,
-      });
+      const suggestedWeight = isBodyweightExercise(exercise) && currentBodyweight !== ""
+        ? currentBodyweight
+        : calcNextWeight({
+            sessions: meso.sessions,
+            muscle,
+            exerciseName: exercise,
+            increment,
+            week: meso.week,
+          });
       const previous = getLastPerformance(meso.sessions, muscle, exercise);
       return {
         exercise,
         increment,
         sets: Array.from({ length: setsPerExercise }).map((_, idx) => ({
           id: Date.now() + Math.random() + idx,
-          weight: idx === 0 ? suggestedWeight : "",
+          weight:
+            isBodyweightExercise(exercise) && currentBodyweight !== ""
+              ? suggestedWeight
+              : idx === 0
+                ? suggestedWeight
+                : "",
           reps: previous?.reps || 10,
           rir: targetRIR,
           done: false,
@@ -716,6 +761,11 @@ function getWeekDoneDaySlotIds(meso, week) {
       )
     )
     .map((slot) => slot.id);
+}
+
+function getNextOpenDaySlot(meso) {
+  const doneSlotIds = getWeekDoneDaySlotIds(meso, meso.week);
+  return getMesoDaySlots(meso).find((slot) => !doneSlotIds.includes(slot.id)) || null;
 }
 
 function advanceWeekIfNeeded(meso) {
@@ -1228,6 +1278,43 @@ function App() {
     setScreen("setup");
   }, []);
 
+  const handleSaveBodyweight = useCallback(
+    async (currentBodyweight, bodyweightUnit) => {
+      if (!supabaseClient || !cloudUser) return;
+      const normalizedValue = normalizeBodyweightValue(currentBodyweight);
+      const nextUnit = UNIT_OPTIONS.includes(bodyweightUnit) ? bodyweightUnit : DEFAULT_UNIT;
+      try {
+        setCloudBusy(true);
+        const metadata = {
+          ...(cloudUser.user_metadata || {}),
+          [BODYWEIGHT_METADATA_KEY]: {
+            currentBodyweight: normalizedValue === "" ? "" : normalizedValue,
+            bodyweightUnit: nextUnit,
+          },
+        };
+        const { data, error } = await supabaseClient.auth.updateUser({
+          data: metadata,
+        });
+        if (error) throw error;
+        if (data?.user) {
+          setCloudUser(data.user);
+        }
+        setCloudStatus(
+          normalizedValue === ""
+            ? "Bodyweight profile cleared."
+            : `Current bodyweight saved at ${formatKg(normalizedValue)} ${nextUnit}.`
+        );
+        setToast("Bodyweight updated");
+      } catch (error) {
+        console.error(error);
+        setCloudStatus("Bodyweight update failed");
+      } finally {
+        setCloudBusy(false);
+      }
+    },
+    [cloudUser, supabaseClient]
+  );
+
   const openSupportScreen = useCallback(() => {
     setAccountOpen(false);
     setScreen("support");
@@ -1248,12 +1335,12 @@ function App() {
       if (!meso) return;
       const done = getWeekDoneDaySlotIds(meso, meso.week);
       if (done.includes(daySlotId)) return;
-      const nextState = buildSessionState(meso, daySlotId);
+      const nextState = buildSessionState(meso, daySlotId, cloudUser);
       if (!nextState) return;
       setSessionState(nextState);
       setScreen("session");
     },
-    [meso]
+    [cloudUser, meso]
   );
 
   const saveSession = useCallback(async () => {
@@ -1288,6 +1375,7 @@ function App() {
       const { muscle, exIdx } = swapTarget;
       const currentExercise = sessionState.log[muscle][exIdx].exercise;
       const increment = meso.increments[nextExercise] || DEFAULT_INCREMENT;
+      const currentBodyweight = getCurrentBodyweightForUnit(cloudUser, meso.unit || DEFAULT_UNIT);
       const nextSession = {
         ...sessionState,
         log: {
@@ -1299,7 +1387,10 @@ function App() {
                   increment,
                   sets: block.sets.map((set) => ({
                     ...set,
-                    weight: "",
+                    weight:
+                      isBodyweightExercise(nextExercise) && currentBodyweight !== ""
+                        ? currentBodyweight
+                        : "",
                     done: false,
                   })),
                 }
@@ -1325,7 +1416,7 @@ function App() {
       setSwapTarget(null);
       setToast("Exercise swapped");
     },
-    [meso, persistMeso, sessionState, swapTarget]
+    [cloudUser, meso, persistMeso, sessionState, swapTarget]
   );
 
   const handleIncrementSave = useCallback(
@@ -1440,6 +1531,7 @@ function App() {
       {screen === "session" && meso && sessionState && (
         <SessionScreen
           meso={meso}
+          currentBodyweight={getCurrentBodyweightForUnit(cloudUser, meso.unit || DEFAULT_UNIT)}
           sessionState={sessionState}
           setSessionState={setSessionState}
           onBack={() => {
@@ -1515,6 +1607,8 @@ function App() {
           hasMeso={Boolean(meso)}
           initialConfig={cloudConfig}
           cloudUser={cloudUser}
+          bodyweightProfile={getBodyweightProfile(cloudUser)}
+          preferredUnit={meso?.unit || DEFAULT_UNIT}
           cloudStatus={cloudStatus}
           cloudBusy={cloudBusy}
           archivedCount={archivedMesos.length}
@@ -1525,6 +1619,7 @@ function App() {
           onForgotPassword={handleForgotPassword}
           onSignOut={handleSignOut}
           onRefresh={loadUserMesos}
+          onSaveBodyweight={handleSaveBodyweight}
           onOpenSupport={openSupportScreen}
           onOpenContact={openContactScreen}
           onOpenArchive={() => {
@@ -1576,15 +1671,33 @@ function WelcomeScreen({
 
   return (
     <div className="centered stack" style={{ gap: 18 }}>
-      <div className="card hero-card stack">
+      <div className="card hero-card hero-panel stack">
+        <div className="hero-orbit hero-orbit-a" />
+        <div className="hero-orbit hero-orbit-b" />
         <div className="eyebrow">Adaptive Hypertrophy Tracking</div>
-        <div className="display" style={{ fontSize: 104, lineHeight: 0.82 }}>
-          Hyper
-          <br />
-          <span className="accent">Phases</span>
+        <div className="hero-title-block">
+          <div className="display" style={{ fontSize: 104, lineHeight: 0.82 }}>
+            Hyper
+            <br />
+            <span className="accent">Phases</span>
+          </div>
+          <div className="hero-subtitle">
+            Build, run, and review a mesocycle with progression driven by effort, recovery, and real logged performance.
+          </div>
         </div>
-        <div className="hero-subtitle">
-          A cleaner, faster way to run a hypertrophy mesocycle with RIR-based load progression and feedback-led volume management.
+        <div className="hero-metrics">
+          <div className="metric-pill">
+            <div className="eyebrow">Load</div>
+            <div className="display gold" style={{ fontSize: 30, lineHeight: 0.92 }}>RIR-led</div>
+          </div>
+          <div className="metric-pill">
+            <div className="eyebrow">Volume</div>
+            <div className="display gold" style={{ fontSize: 30, lineHeight: 0.92 }}>Adaptive</div>
+          </div>
+          <div className="metric-pill">
+            <div className="eyebrow">Flow</div>
+            <div className="display gold" style={{ fontSize: 30, lineHeight: 0.92 }}>Mobile</div>
+          </div>
         </div>
         <div className="hero-actions">
           <button className="btn-primary" onClick={onStart}>
@@ -1601,29 +1714,6 @@ function WelcomeScreen({
         </div>
         <div className="small">
           Start from popular split templates, then adjust day names and muscle coverage so the structure matches how you actually train.
-        </div>
-      </div>
-      <div className="insight-grid">
-        <div className="insight-card stack" style={{ gap: 6 }}>
-          <div className="eyebrow">Load</div>
-          <div className="display gold" style={{ fontSize: 34, lineHeight: 0.92 }}>
-            RIR-led
-          </div>
-          <div className="tiny muted">Suggestions stay grounded in your last real performance.</div>
-        </div>
-        <div className="insight-card stack" style={{ gap: 6 }}>
-          <div className="eyebrow">Volume</div>
-          <div className="display gold" style={{ fontSize: 34, lineHeight: 0.92 }}>
-            Adaptive
-          </div>
-          <div className="tiny muted">Pump, soreness, and output guide the weekly ramp.</div>
-        </div>
-        <div className="insight-card stack" style={{ gap: 6 }}>
-          <div className="eyebrow">Workflow</div>
-          <div className="display gold" style={{ fontSize: 34, lineHeight: 0.92 }}>
-            Mobile
-          </div>
-          <div className="tiny muted">Dense enough for training, clean enough to trust at a glance.</div>
         </div>
       </div>
       <div className="stack">
@@ -2449,6 +2539,7 @@ function HomeScreen({
   const daySlots = getMesoDaySlots(meso);
   const activeMuscles = getActiveMusclesFromSlots(daySlots);
   const doneDayTypes = getWeekDoneDaySlotIds(meso, meso.week);
+  const nextDaySlot = getNextOpenDaySlot(meso);
   const progress = meso.totalWeeks > 0 ? clamp(((meso.week - 1) / meso.totalWeeks) * 100, 0, 100) : 0;
   const complete = meso.week > meso.totalWeeks;
   const summary = getMesoSummaryStats(meso);
@@ -2506,113 +2597,115 @@ function HomeScreen({
         </div>
       ) : (
         <>
-          <div className="card stack">
+          <div className="page-section-head">
+            <div className="eyebrow">Current Meso</div>
+            <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+              Train The Current Block
+            </div>
+          </div>
+          <div className="card hero-panel dashboard-hero stack">
+            <div className="hero-orbit hero-orbit-a" />
+            <div className="hero-orbit hero-orbit-b" />
+            <div className="hero-topline">
+              <div className="eyebrow">Current Block</div>
+              <div className="status-cluster">
+                <span className="status-chip status-chip-good">{doneDayTypes.length}/{daySlots.length} sessions</span>
+                <span className="status-chip">{meso.splitName || meso.split?.name || "Custom split"}</span>
+              </div>
+            </div>
             <div className="week-hero">
-              <div className="stack" style={{ gap: 8 }}>
-                <div className="eyebrow">Current Mesocycle</div>
+              <div className="stack" style={{ gap: 10 }}>
                 <div className="display" style={{ fontSize: 96, lineHeight: 0.8 }}>
-                  {meso.week}
+                  Week {meso.week}
                 </div>
                 <div className="small muted">of {meso.totalWeeks} weeks</div>
                 <div className="week-copy">
-                  {meso.splitName || meso.split?.name || "Custom split"} · log each configured session once to move the week forward and keep progression aligned to your output.
+                  Keep the structure stable, push performance inside the target effort, and use feedback to guide weekly volume.
+                </div>
+                <div className="dashboard-momentum">
+                  {Array.from({ length: meso.totalWeeks }).map((_, idx) => (
+                    <div
+                      key={`momentum-${idx + 1}`}
+                      className={`momentum-node ${
+                        idx + 1 < meso.week ? "done" : idx + 1 === meso.week ? "current" : ""
+                      }`}
+                    />
+                  ))}
                 </div>
               </div>
-              <div className="card" style={{ minWidth: 120, padding: 12 }}>
-                <div className="display gold" style={{ fontSize: 54, lineHeight: 0.85 }}>
-                  {targetRIRForWeek(meso.week)}
+              <div className="stack" style={{ gap: 12 }}>
+                <div className="hero-stat-card">
+                  <div className="display gold" style={{ fontSize: 54, lineHeight: 0.85 }}>
+                    {targetRIRForWeek(meso.week)}
+                  </div>
+                  <div className="label tiny">Target RIR</div>
                 </div>
-                <div className="label tiny">Target RIR</div>
+                <div className="hero-stat-card">
+                  <div className="eyebrow">Next Session</div>
+                  <div className="display" style={{ fontSize: 32, lineHeight: 0.92 }}>
+                    {nextDaySlot ? nextDaySlot.label : "Complete"}
+                  </div>
+                  <div className="tiny muted">
+                    {nextDaySlot ? nextDaySlot.muscles.join(" · ") : "This block is ready for a new mesocycle."}
+                  </div>
+                </div>
               </div>
             </div>
             <div className="progress-track">
               <div className="progress-fill" style={{ width: `${progress}%` }} />
             </div>
-          </div>
-
-          <div className="grid-2">
-            <button className="card action-panel stack" onClick={onOpenSupport}>
-              <div className="eyebrow">Support HyperPhases</div>
-              <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
-                Fund The Platform
-              </div>
-              <div className="small muted">
-                Support development, hosting, and the next round of improvements with a one-time contribution.
-              </div>
-              <div className="mono tiny gold">Embedded checkout in one tap</div>
-            </button>
-            <button className="card action-panel stack" onClick={onOpenContact}>
-              <div className="eyebrow">Contact & Feedback</div>
-              <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
-                Report Or Reach Out
-              </div>
-              <div className="small muted">
-                Send bug reports, feature ideas, account questions, or training-log issues directly to the team.
-              </div>
-              <div className="mono tiny gold">feedback@hyperphases.com</div>
-            </button>
-          </div>
-
-          <div className="grid-2">
-            <div className="card stack analytics-card">
-              <div className="eyebrow">Why RIR Works</div>
-              <div className="small">
-                RIR keeps progression tied to real effort so you can push load upward without turning every session into failure-based fatigue.
-              </div>
-              <div className="tiny muted">
-                A mesocycle is a focused 4 to 8 week block where you keep the structure stable and progress load, effort, and volume across the phase.
-              </div>
-              <div className="goal-track">
-                <div className="goal-fill" style={{ width: `${summary.mesoPct}%` }} />
-              </div>
-              <div className="mono tiny" style={{ color: "var(--ok)" }}>
-                Week target set to {targetRIRForWeek(meso.week)} RIR across new sets
-              </div>
+            <div className="hero-actions">
+              <button
+                className="btn-primary"
+                onClick={() => nextDaySlot && onStartSession(nextDaySlot.id)}
+                disabled={!nextDaySlot}
+              >
+                {nextDaySlot ? `Start ${nextDaySlot.label}` : "Block Complete"}
+              </button>
+              <button className="btn-ghost" onClick={onManageExercises}>
+                Manage Plan
+              </button>
             </div>
-            <div className="card stack analytics-card">
-              <div className="eyebrow">Progress Snapshot</div>
-              <div className="display" style={{ fontSize: 40, lineHeight: 0.88 }}>
-                {summary.upwardCount}
-              </div>
-              <div className="small muted">exercises trending upward this mesocycle</div>
-              <div className="tiny muted">
-                {summary.strongest
-                  ? `${summary.strongest.exercise} is up ${formatKg(summary.strongest.delta)} ${unitLabel}`
-                  : "Complete sessions to unlock strength trend highlights."}
-              </div>
+          </div>
+
+          <div className="page-section-head">
+            <div className="eyebrow">Analytics</div>
+            <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+              Progress And Trends
             </div>
           </div>
 
           <div className="grid-3">
-            <div className="card stack analytics-card">
+            <div className="card stack metric-card metric-card-focus">
               <div className="eyebrow">This Week</div>
-              <div className="display" style={{ fontSize: 42, lineHeight: 0.88 }}>
+              <div className="display" style={{ fontSize: 46, lineHeight: 0.88 }}>
                 {doneDayTypes.length}/{daySlots.length}
               </div>
               <div className="goal-track">
                 <div className="goal-fill" style={{ width: `${summary.completionPct}%` }} />
               </div>
-              <div className="tiny muted">{summary.daysLeft} sessions left this week</div>
+              <div className="tiny muted">{summary.daysLeft} sessions left to advance the week</div>
             </div>
-            <div className="card stack analytics-card">
-              <div className="eyebrow">Meso Progress</div>
-              <div className="display" style={{ fontSize: 42, lineHeight: 0.88 }}>
+            <div className="card stack metric-card">
+              <div className="eyebrow">Block Momentum</div>
+              <div className="display" style={{ fontSize: 46, lineHeight: 0.88 }}>
                 {Math.round(summary.mesoPct)}%
               </div>
               <div className="goal-track">
                 <div className="goal-fill" style={{ width: `${summary.mesoPct}%` }} />
               </div>
-              <div className="tiny muted">goal completion across the current block</div>
+              <div className="tiny muted">progress through the current mesocycle</div>
             </div>
-            <div className="card stack analytics-card">
-              <div className="eyebrow">Archive</div>
-              <div className="display" style={{ fontSize: 42, lineHeight: 0.88 }}>
-                {archivedMesos.length}
+            <div className="card stack metric-card">
+              <div className="eyebrow">Top Trend</div>
+              <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+                {summary.strongest ? summary.strongest.exercise : "Waiting"}
               </div>
-              <div className="tiny muted">previous mesocycles saved to your account</div>
-              <button className="btn-ghost" onClick={onOpenArchive}>
-                View Previous
-              </button>
+              <div className="tiny muted">
+                {summary.strongest
+                  ? `${summary.strongest.delta > 0 ? "+" : ""}${formatKg(summary.strongest.delta)} ${unitLabel} this block`
+                  : "Log more completed sets to unlock progression trends."}
+              </div>
             </div>
           </div>
 
@@ -2641,17 +2734,14 @@ function HomeScreen({
             })}
           </div>
 
-          <div className="card stack">
+          <div className="card stack section-card">
             <div className="title-row">
               <div>
                 <div className="display" style={{ fontSize: 38 }}>
                   Strength Trends
                 </div>
-                <div className="mono tiny muted">first logged weight vs latest logged weight</div>
+                <div className="mono tiny muted">first logged weight vs latest logged weight across the block</div>
               </div>
-              <button className="btn-ghost" onClick={onManageExercises}>
-                Manage Exercises
-              </button>
             </div>
             {(summary.topMovers || []).length ? (
               summary.topMovers.map((item) => (
@@ -2675,7 +2765,7 @@ function HomeScreen({
             )}
           </div>
 
-          <div className="card stack">
+          <div className="card stack section-card">
             <div className="title-row">
               <div className="display" style={{ fontSize: 38 }}>
                 Volume
@@ -2699,6 +2789,62 @@ function HomeScreen({
               );
             })}
           </div>
+
+          <div className="section-divider" />
+
+          <div className="page-section-head">
+            <div className="eyebrow">Overall Info</div>
+            <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+              Guidance And Platform
+            </div>
+          </div>
+
+          <div className="grid-2">
+            <div className="card stack section-card">
+              <div className="eyebrow">Why RIR Works</div>
+              <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
+                Effort With Guardrails
+              </div>
+              <div className="small">
+                RIR keeps load progression tied to real effort so you can push output upward without turning every session into avoidable fatigue.
+              </div>
+              <div className="tiny muted">
+                A mesocycle is a focused 4 to 8 week block where you keep the structure stable and progress load, effort, and volume across the phase.
+              </div>
+            </div>
+            <div className="card stack metric-card">
+              <div className="eyebrow">Archive</div>
+              <div className="display" style={{ fontSize: 42, lineHeight: 0.88 }}>
+                {archivedMesos.length}
+              </div>
+              <div className="tiny muted">previous mesocycles saved to your account</div>
+              <button className="btn-ghost" onClick={onOpenArchive}>
+                View Previous
+              </button>
+            </div>
+          </div>
+
+          <div className="grid-2">
+            <button className="card action-panel stack" onClick={onOpenSupport}>
+              <div className="eyebrow">Support The Platform</div>
+              <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+                Keep It Moving
+              </div>
+              <div className="small muted">
+                Support development, hosting, and future product improvements without turning HyperPhases into a subscription app.
+              </div>
+            </button>
+            <button className="card action-panel stack" onClick={onOpenContact}>
+              <div className="eyebrow">Contact & Feedback</div>
+              <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+                Reach The Team
+              </div>
+              <div className="small muted">
+                Send bug reports, feature ideas, account questions, or training-log issues directly to the team.
+              </div>
+              <div className="mono tiny gold">feedback@hyperphases.com</div>
+            </button>
+          </div>
         </>
       )}
     </div>
@@ -2709,6 +2855,8 @@ function AccountSheet({
   hasMeso,
   initialConfig,
   cloudUser,
+  bodyweightProfile,
+  preferredUnit,
   cloudStatus,
   cloudBusy,
   archivedCount,
@@ -2719,6 +2867,7 @@ function AccountSheet({
   onForgotPassword,
   onSignOut,
   onRefresh,
+  onSaveBodyweight,
   onOpenSupport,
   onOpenContact,
   onOpenArchive,
@@ -2743,6 +2892,8 @@ function AccountSheet({
           hasMeso={hasMeso}
           initialConfig={initialConfig}
           cloudUser={cloudUser}
+          bodyweightProfile={bodyweightProfile}
+          preferredUnit={preferredUnit}
           cloudStatus={cloudStatus}
           cloudBusy={cloudBusy}
           onSaveCloudConfig={onSaveCloudConfig}
@@ -2751,6 +2902,7 @@ function AccountSheet({
           onForgotPassword={onForgotPassword}
           onSignOut={onSignOut}
           onRefresh={onRefresh}
+          onSaveBodyweight={onSaveBodyweight}
           onOpenArchive={onOpenArchive}
           archivedCount={archivedCount}
         />
@@ -2822,6 +2974,8 @@ function CloudSyncCard({
   hasMeso,
   initialConfig,
   cloudUser,
+  bodyweightProfile,
+  preferredUnit,
   cloudStatus,
   cloudBusy,
   onSaveCloudConfig,
@@ -2830,6 +2984,7 @@ function CloudSyncCard({
   onForgotPassword,
   onSignOut,
   onRefresh,
+  onSaveBodyweight,
   onOpenArchive,
   archivedCount,
 }) {
@@ -2838,6 +2993,8 @@ function CloudSyncCard({
   const [anonKey, setAnonKey] = useState(initialConfig?.anonKey || "");
   const [email, setEmail] = useState(cloudUser?.email || "");
   const [password, setPassword] = useState("");
+  const [bodyweight, setBodyweight] = useState(bodyweightProfile?.currentBodyweight || "");
+  const [bodyweightUnit, setBodyweightUnit] = useState(bodyweightProfile?.bodyweightUnit || preferredUnit || DEFAULT_UNIT);
   const accountTitle = cloudUser ? `You are now signed in as ${cloudUser.email}` : "Sign in to start tracking";
   const accountSummary = cloudUser
     ? "Your active mesocycle and archive live in your account, so your state stays consistent across devices."
@@ -2854,6 +3011,11 @@ function CloudSyncCard({
       setEmail(cloudUser.email);
     }
   }, [cloudUser]);
+
+  useEffect(() => {
+    setBodyweight(bodyweightProfile?.currentBodyweight || "");
+    setBodyweightUnit(bodyweightProfile?.bodyweightUnit || preferredUnit || DEFAULT_UNIT);
+  }, [bodyweightProfile, preferredUnit]);
 
   return (
     <div className="card stack">
@@ -2927,17 +3089,72 @@ function CloudSyncCard({
         </>
       )}
       {cloudUser && (
-        <div className="grid-3">
-          <button className="btn-ghost" onClick={onRefresh}>
-            Refresh
-          </button>
-          <button className="btn-ghost" onClick={onOpenArchive}>
-            Archive
-          </button>
-          <button className="btn-ghost" onClick={onSignOut}>
-            Sign Out
-          </button>
-        </div>
+        <>
+          <div className="inset stack" style={{ padding: 14 }}>
+            <div className="title-row">
+              <div>
+                <div className="label tiny gold">current bodyweight</div>
+                <div className="tiny muted">
+                  Pull-ups and dips will prefill with the latest saved bodyweight.
+                </div>
+              </div>
+              <div className="status-chip">
+                {bodyweight === "" ? "not set" : `${formatKg(bodyweight)} ${bodyweightUnit}`}
+              </div>
+            </div>
+            <div className="grid-2">
+              <input
+                type="number"
+                min="0"
+                step={getUnitStep(bodyweightUnit)}
+                value={bodyweight}
+                onChange={(event) => setBodyweight(event.target.value)}
+                placeholder={`Bodyweight (${bodyweightUnit})`}
+              />
+              <div className="grid-2">
+                {UNIT_OPTIONS.map((option) => (
+                  <button
+                    key={`bodyweight-${option}`}
+                    className={`pill-btn gold ${bodyweightUnit === option ? "active" : ""}`}
+                    onClick={() => setBodyweightUnit(option)}
+                  >
+                    {option.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="title-row">
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  setBodyweight("");
+                  onSaveBodyweight("", bodyweightUnit);
+                }}
+                disabled={cloudBusy}
+              >
+                Clear
+              </button>
+              <button
+                className="btn-sm"
+                onClick={() => onSaveBodyweight(bodyweight, bodyweightUnit)}
+                disabled={cloudBusy}
+              >
+                Save Bodyweight
+              </button>
+            </div>
+          </div>
+          <div className="grid-3">
+            <button className="btn-ghost" onClick={onRefresh}>
+              Refresh
+            </button>
+            <button className="btn-ghost" onClick={onOpenArchive}>
+              Archive
+            </button>
+            <button className="btn-ghost" onClick={onSignOut}>
+              Sign Out
+            </button>
+          </div>
+        </>
       )}
       <div className="tiny muted">
         {cloudUser
@@ -3331,6 +3548,7 @@ function ContactFeedbackScreen({ onBack, onOpenSupport }) {
 
 function SessionScreen({
   meso,
+  currentBodyweight,
   sessionState,
   setSessionState,
   onBack,
@@ -3345,6 +3563,7 @@ function SessionScreen({
   const unitLabel = getUnitLabel(meso?.unit);
   const unitStep = getUnitStep(meso?.unit);
   const targetRIR = targetRIRForWeek(meso.week);
+  const completedMuscles = muscles.filter((muscle) => isMuscleDone(sessionState, muscle)).length;
 
   const updateSet = (muscle, exIdx, setIdx, field, value) => {
     setSessionState((current) => ({
@@ -3376,7 +3595,10 @@ function SessionScreen({
                   ...block.sets,
                   {
                     id: Date.now() + Math.random(),
-                    weight: "",
+                    weight:
+                      isBodyweightExercise(block.exercise) && currentBodyweight !== ""
+                        ? currentBodyweight
+                        : "",
                     reps: 10,
                     rir: targetRIR,
                     done: false,
@@ -3429,13 +3651,23 @@ function SessionScreen({
         </div>
       </div>
 
-      <div className="card stack analytics-card" style={{ gap: 8 }}>
-        <div className="eyebrow">Why RIR Is Effective</div>
-        <div className="small">
-          Target RIR keeps load progression anchored to repeatable effort. It helps you push the block forward while controlling fatigue session to session.
+      <div className="card hero-panel session-overview stack">
+        <div className="title-row">
+          <div>
+            <div className="eyebrow">Session Console</div>
+            <div className="display" style={{ fontSize: 40, lineHeight: 0.92 }}>
+              Execute The Plan
+            </div>
+          </div>
+          <div className="status-chip status-chip-good">
+            {completedMuscles}/{muscles.length} muscles complete
+          </div>
         </div>
-        <div className="mono tiny" style={{ color: "var(--ok)" }}>
-          New sets default to {targetRIR} RIR for week {meso.week}.
+        <div className="small">
+          Target RIR keeps load progression anchored to repeatable effort. New sets are prefilled for week {meso.week} so the workout starts from the mesocycle target rather than a blank slate.
+        </div>
+        <div className="goal-track">
+          <div className="goal-fill" style={{ width: `${clamp((completedMuscles / Math.max(1, muscles.length)) * 100, 0, 100)}%` }} />
         </div>
       </div>
 
@@ -3453,8 +3685,29 @@ function SessionScreen({
             {(sessionState.log[muscle] || []).map((block, exIdx) => (
               <div key={`${muscle}-${block.exercise}-${exIdx}`} className="exercise-block stack">
                 <div className="exercise-header">
-                  <div className="display" style={{ fontSize: 28 }}>
-                    {block.exercise}
+                  <div className="stack" style={{ gap: 6 }}>
+                    <div className="display" style={{ fontSize: 28 }}>
+                      {block.exercise}
+                    </div>
+                    <div className="exercise-meta">
+                      <span className="status-chip">Target {targetRIR} RIR</span>
+                      <span className="status-chip">Inc ±{formatKg(block.increment)}{unitLabel}</span>
+                      {isBodyweightExercise(block.exercise) && currentBodyweight !== "" && (
+                        <span className="status-chip status-chip-good">
+                          BW {currentBodyweight} {unitLabel}
+                        </span>
+                      )}
+                      {(() => {
+                        const previous = getLastPerformance(meso.sessions, muscle, block.exercise);
+                        return previous ? (
+                          <span className="status-chip status-chip-good">
+                            Last {formatKg(previous.weight)} {unitLabel} x {previous.reps} @ {previous.rir} RIR
+                          </span>
+                        ) : (
+                          <span className="status-chip">First log for this movement</span>
+                        );
+                      })()}
+                    </div>
                   </div>
                   <div className="exercise-actions">
                     <button
@@ -3479,7 +3732,7 @@ function SessionScreen({
                   <div>✓</div>
                 </div>
                 {block.sets.map((set, setIdx) => (
-                  <div key={set.id} className="session-grid">
+                  <div key={set.id} className={`session-grid ${set.done ? "done" : "active"}`}>
                     <div className="mono tiny gold">{setIdx + 1}</div>
                     <input
                       type="number"
@@ -3519,7 +3772,7 @@ function SessionScreen({
                     </button>
                   </div>
                 ))}
-                <button className="btn-ghost" onClick={() => addSet(muscle, exIdx)}>
+                <button className="btn-ghost add-set-btn" onClick={() => addSet(muscle, exIdx)}>
                   + add set
                 </button>
               </div>
