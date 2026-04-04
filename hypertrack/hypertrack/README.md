@@ -11,15 +11,15 @@ The app is designed to reproduce the core practical loop of RP-style hypertrophy
 
 This repository is intentionally simple:
 
-- Worker-friendly static asset app
+- static hosting friendly
 - one `index.html`
 - one `app.jsx`
-- one runtime-served `config.js`
+- one committed `config.js`
 - optional Supabase auth and sync
 
 Cloudflare deployment note:
 
-- the app now serves public Supabase config through a Cloudflare Worker route
+- the app now reads public Supabase config directly from `config.js`
 
 ## What the app does
 
@@ -116,13 +116,7 @@ That lets the first resumed workout still produce weight suggestions immediately
   - session logging
   - Supabase auth and sync
 - `config.js`
-  - local fallback config for non-Worker environments
-- `worker.js`
-  - serves runtime config and forwards all other requests to static assets
-- `wrangler.jsonc`
-  - Worker and asset configuration
-- `.dev.vars.example`
-  - local Worker environment variable template
+  - committed browser-readable Supabase public config
 
 ## Local persistence
 
@@ -217,7 +211,7 @@ The app exposes an account panel in the UI.
 
 The clean production flow is:
 
-- Supabase URL and anon key are served from the Worker at runtime
+- Supabase URL and anon key are embedded in `config.js`
 - the user only enters email and password
 
 Then:
@@ -231,12 +225,12 @@ Then:
 Before using Supabase auth, configure your project:
 
 1. Enable Email auth in Supabase Auth.
-2. If email confirmation is enabled, add your deployed Cloudflare URL to the allowed site / redirect settings.
-3. Keep your project URL and anon key ready for Cloudflare Worker environment variables.
+2. If email confirmation is enabled, add your deployed Cloudflare Pages URL to the allowed site / redirect settings.
+3. Keep your project URL and anon key ready for `config.js`.
 
 If you test locally and confirmation emails are enabled, also add your local URL such as:
 
-- `http://localhost:8787`
+- `http://localhost:4173`
 
 ### What the app syncs
 
@@ -256,56 +250,35 @@ The Supabase anon key is meant to be used in the browser. Do not place your Supa
 
 ## Running locally
 
-Run the app through Wrangler so the Worker can provide runtime config.
-
-1. Copy the env template:
+Serve the folder as a plain static site.
 
 ```bash
 cd /Users/cianoh/hypertrack
-cp .dev.vars.example .dev.vars
-```
-
-2. Edit `.dev.vars` with your real values:
-
-```txt
-HYPERTRACK_SUPABASE_URL="https://your-project-ref.supabase.co"
-HYPERTRACK_SUPABASE_ANON_KEY="your-anon-or-publishable-key"
-```
-
-3. Start local dev:
-
-```bash
-cd /Users/cianoh/hypertrack
-npx wrangler dev
+python3 -m http.server 4173
 ```
 
 Then open:
 
 ```txt
-http://localhost:8787
+http://localhost:4173
 ```
 
-If you want a plain static fallback for visual-only testing, `config.js` will keep the app from crashing, but account sync is intended to be tested through Wrangler.
+If you ever need to change Supabase projects, update the values in `config.js`.
 
-## Deploying to Cloudflare
+## Deploying to Cloudflare Pages
 
-Deploy this as a Worker with static assets, not as a static-only Pages site.
+Deploy this as a plain static Pages site.
 
-Runtime variables to add:
+Use these settings in Cloudflare Pages:
 
-- `HYPERTRACK_SUPABASE_URL`
-- `HYPERTRACK_SUPABASE_ANON_KEY`
+- Framework preset: `None`
+- Build command: leave blank
+- Build output directory: `/`
+- Root directory: `hypertrack` if deploying from the monorepo root
 
 These values are public client values. Do not use the Supabase service role key.
 
-Deploy with Wrangler:
-
-```bash
-cd /Users/cianoh/hypertrack
-npx wrangler deploy
-```
-
-With those set, the deployed app will stop asking users for Supabase keys and will only ask for email/password.
+Because `config.js` is committed with the public client values, the deployed app will stop asking users for Supabase keys and will only ask for email/password.
 
 ## Uploading to GitHub
 
@@ -316,10 +289,8 @@ If you do not want to sign into GitHub in the laptop browser, the easiest workfl
    - `index.html`
    - `app.jsx`
    - `config.js`
-   - `worker.js`
-   - `wrangler.jsonc`
    - `README.md`
-3. Deploy with Wrangler or connect the repo to a Worker-capable Cloudflare workflow.
+3. Connect that repo to Cloudflare Pages.
 
 ## AI exercise suggestions
 
