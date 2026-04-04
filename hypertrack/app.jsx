@@ -4045,19 +4045,28 @@ function ManageExercisesSheet({ meso, onClose, onAdd, onRemove }) {
             </div>
             <div className="inset stack" style={{ padding: 12 }}>
               <div className="label tiny gold">add exercise</div>
+              <select
+                value={
+                  getAllExerciseOptions(muscle).includes(drafts[muscle] || "")
+                    ? drafts[muscle] || ""
+                    : ""
+                }
+                onChange={(event) => updateDraft(muscle, event.target.value)}
+              >
+                <option value="">Choose a {muscle} exercise</option>
+                {getAllExerciseOptions(muscle).map((exercise) => (
+                  <option key={`${muscle}-manage-${exercise}`} value={exercise}>
+                    {exercise}
+                  </option>
+                ))}
+              </select>
               <input
-                list={`manage-library-${muscle}`}
                 value={drafts[muscle] || ""}
                 onChange={(event) => updateDraft(muscle, event.target.value)}
-                placeholder={`Type or choose a ${muscle} exercise`}
+                placeholder={`Or type a custom ${muscle} exercise`}
               />
-              <datalist id={`manage-library-${muscle}`}>
-                {getAllExerciseOptions(muscle).map((exercise) => (
-                  <option key={`${muscle}-manage-${exercise}`} value={exercise} />
-                ))}
-              </datalist>
               <div className="title-row">
-                <div className="tiny muted">Choose from the library or type your own movement.</div>
+                <div className="tiny muted">Pick from the dropdown or type your own movement.</div>
                 <button
                   className="btn-ghost"
                   disabled={(meso.exercises[muscle] || []).length >= 3 || !normalizeExerciseName(drafts[muscle])}
