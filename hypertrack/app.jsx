@@ -867,6 +867,21 @@ async function createSupportCheckoutSession({ supabaseClient, amount, email }) {
   if (!normalized) {
     throw new Error("Enter a valid support amount.");
   }
+  const payload = {
+    amount: normalized,
+    currency: "eur",
+    email,
+    returnUrl: `${window.location.origin}${window.location.pathname}?support=success`,
+  };
+  if (supabaseClient?.functions?.invoke) {
+    const { data, error } = await supabaseClient.functions.invoke(SUPPORT_FUNCTION_NAME, {
+      body: payload,
+    });
+    if (error) {
+      throw new Error(error.message || "Unable to start checkout.");
+    }
+    return data;
+  }
   const baseUrl = DEPLOY_CONFIG.supabaseUrl || "";
   const anonKey = DEPLOY_CONFIG.supabaseAnonKey || "";
   if (!baseUrl || !anonKey) {
@@ -881,25 +896,23 @@ async function createSupportCheckoutSession({ supabaseClient, amount, email }) {
     const accessToken = session?.data?.session?.access_token;
     if (accessToken) {
       headers.Authorization = `Bearer ${accessToken}`;
+    } else {
+      headers.Authorization = `Bearer ${anonKey}`;
     }
   } catch (error) {
     console.error(error);
+    headers.Authorization = `Bearer ${anonKey}`;
   }
   const response = await fetch(`${baseUrl}/functions/v1/${SUPPORT_FUNCTION_NAME}`, {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      amount: normalized,
-      currency: "eur",
-      email,
-      returnUrl: `${window.location.origin}${window.location.pathname}?support=success`,
-    }),
+    body: JSON.stringify(payload),
   });
-  const payload = await response.json().catch(() => ({}));
+  const responsePayload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload?.error || "Unable to start checkout.");
+    throw new Error(responsePayload?.error || responsePayload?.message || "Unable to start checkout.");
   }
-  return payload;
+  return responsePayload;
 }
 
 function App() {
