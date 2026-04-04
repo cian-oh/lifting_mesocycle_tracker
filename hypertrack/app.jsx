@@ -2474,6 +2474,8 @@ function HomeScreen({
               );
             })}
           </div>
+
+          <SupportCard compact />
         </>
       )}
     </div>
@@ -2525,6 +2527,7 @@ function AccountSheet({
           onOpenArchive={onOpenArchive}
           archivedCount={archivedCount}
         />
+        <SupportCard />
       </div>
     </div>
   );
@@ -2686,6 +2689,29 @@ function CloudSyncCard({
           ? `${archivedCount || 0} archived mesocycles saved. Workout data is stored in Supabase, not in browser local storage.`
           : "Once signed in, HyperPhases keeps workout data in Supabase so your training state follows your account."}
       </div>
+    </div>
+  );
+}
+
+function SupportCard({ compact = false }) {
+  return (
+    <div className="card stack analytics-card">
+      <div className="eyebrow">Support</div>
+      <div className="display" style={{ fontSize: compact ? 34 : 38, lineHeight: 0.92 }}>
+        Contact & Feedback
+      </div>
+      <div className="small">
+        For bug reports, product feedback, account issues, or training-log problems, contact the HyperPhases team directly.
+      </div>
+      <div className="inset stack" style={{ padding: 14, gap: 8 }}>
+        <div className="mono small">feedback@hyperphases.com</div>
+        <div className="tiny muted">
+          Include the issue, device/browser, and any steps to reproduce if you are reporting a bug.
+        </div>
+      </div>
+      <a className="btn-ghost support-link" href="mailto:feedback@hyperphases.com?subject=HyperPhases%20Feedback">
+        Email Support
+      </a>
     </div>
   );
 }
