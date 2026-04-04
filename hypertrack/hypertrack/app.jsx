@@ -561,7 +561,7 @@ function App() {
   const [cloudConfig, setCloudConfig] = useState(() => loadSupabaseConfig());
   const [supabaseClient, setSupabaseClient] = useState(null);
   const [cloudUser, setCloudUser] = useState(null);
-  const [cloudStatus, setCloudStatus] = useState("Local-only mode");
+  const [cloudStatus, setCloudStatus] = useState("Sign in to sync across devices.");
   const [cloudBusy, setCloudBusy] = useState(false);
 
   useEffect(() => {
@@ -594,8 +594,8 @@ function App() {
       setCloudUser(null);
       setCloudStatus(
         cloudConfig.url || cloudConfig.anonKey
-          ? "Supabase config incomplete"
-          : "Local-only mode"
+          ? "Connection details are incomplete."
+          : "Sign in to sync across devices."
       );
       return undefined;
     }
@@ -604,17 +604,23 @@ function App() {
       if (!active) return;
       if (error) {
         console.error(error);
-        setCloudStatus("Supabase auth unavailable");
+        setCloudStatus("Account services are unavailable right now.");
         return;
       }
       setCloudUser(data.user || null);
-      setCloudStatus(data.user ? `Signed in as ${data.user.email}` : "Supabase ready");
+      setCloudStatus(
+        data.user ? `Signed in as ${data.user.email}` : "Sign in to sync across devices."
+      );
     });
     const {
       data: { subscription },
     } = client.auth.onAuthStateChange((_event, session) => {
       setCloudUser(session?.user || null);
-      setCloudStatus(session?.user ? `Signed in as ${session.user.email}` : "Supabase ready");
+      setCloudStatus(
+        session?.user
+          ? `Signed in as ${session.user.email}`
+          : "Sign in to sync across devices."
+      );
     });
     return () => {
       active = false;
@@ -636,10 +642,10 @@ function App() {
           payload = await pushRemoteMeso(supabaseClient, cloudUser.id, payload);
           setMeso(payload);
           await storage.set(payload);
-          setCloudStatus(`Synced ${new Date(payload.updatedAt).toLocaleString()}`);
+          setCloudStatus(`Last synced ${new Date(payload.updatedAt).toLocaleString()}`);
         } catch (error) {
           console.error(error);
-          setCloudStatus("Cloud sync failed; local save kept");
+          setCloudStatus("Sync failed. Your local save is still safe.");
         } finally {
           setCloudBusy(false);
         }
@@ -663,10 +669,12 @@ function App() {
           await pushRemoteMeso(supabaseClient, cloudUser.id, chosen);
         }
       }
-      setCloudStatus(remoteRow ? "Cloud sync complete" : "No cloud mesocycle found yet");
+      setCloudStatus(
+        remoteRow ? "Cloud progress refreshed." : "No synced mesocycle found for this account yet."
+      );
     } catch (error) {
       console.error(error);
-      setCloudStatus("Cloud sync failed");
+      setCloudStatus("Sync failed.");
     } finally {
       setCloudBusy(false);
     }
@@ -755,7 +763,7 @@ function App() {
       const { error } = await supabaseClient.auth.signOut();
       if (error) throw error;
       setCloudUser(null);
-      setCloudStatus("Signed out; local mode still available");
+      setCloudStatus("Signed out. Local progress is still available on this device.");
     } catch (error) {
       console.error(error);
       setCloudStatus("Sign-out failed");
@@ -1794,6 +1802,11 @@ function CloudSyncCard({
   const [anonKey, setAnonKey] = useState(initialConfig?.anonKey || "");
   const [email, setEmail] = useState(cloudUser?.email || "");
   const [password, setPassword] = useState("");
+  const accountTitle = cloudUser ? "Account" : "Sync Your Progress";
+  const accountSummary = cloudUser
+    ? "Your mesocycle can sync across devices while still saving locally on this browser."
+    : "Sign in to back up your mesocycle and keep progress consistent across devices.";
+  const statusTone = /failed/i.test(cloudStatus) ? "accent" : cloudUser ? "gold" : "muted";
 
   useEffect(() => {
     setUrl(initialConfig?.url || "");
@@ -1810,16 +1823,15 @@ function CloudSyncCard({
     <div className="card stack">
       <div className="title-row">
         <div>
-          <div className="eyebrow">// cloud sync</div>
+          <div className="eyebrow">Account</div>
           <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
-            Supabase
+            {accountTitle}
           </div>
         </div>
-        <div className="mono tiny gold">{cloudUser ? "connected" : "optional"}</div>
+        {cloudUser && <div className="mono tiny gold">Signed in</div>}
       </div>
-      <div className="mono tiny muted">
-        {cloudStatus}
-      </div>
+      <div className="small">{accountSummary}</div>
+      <div className={`mono tiny ${statusTone}`}>{cloudStatus}</div>
       {!hasHostedConfig && (
         <>
           <input
@@ -1838,14 +1850,9 @@ function CloudSyncCard({
             className="btn-ghost"
             onClick={() => onSaveCloudConfig({ url: url.trim(), anonKey: anonKey.trim() })}
           >
-            Save Config
+            Save Connection
           </button>
         </>
-      )}
-      {hasHostedConfig && (
-        <div className="mono tiny gold">
-          Cloud config loaded from deployment.
-        </div>
       )}
       <input
         type="email"
@@ -1867,7 +1874,7 @@ function CloudSyncCard({
               disabled={cloudBusy || !email.trim() || !password}
               onClick={() => onSignUp(email.trim(), password)}
             >
-              Sign Up
+              Create Account
             </button>
             <button
               className="btn-sm"
@@ -1882,10 +1889,10 @@ function CloudSyncCard({
       {cloudUser && (
         <div className="grid-3">
           <button className="btn-ghost" onClick={onPullCloud}>
-            Pull Cloud
+            Refresh Sync
           </button>
           <button className="btn-ghost" onClick={onPushCloud} disabled={!hasMeso}>
-            Push Current
+            Save to Cloud
           </button>
           <button className="btn-ghost" onClick={onSignOut}>
             Sign Out
@@ -1893,7 +1900,7 @@ function CloudSyncCard({
         </div>
       )}
       <div className="tiny muted">
-        Local storage always remains active. Supabase adds account-based sync for the same mesocycle JSON blob.
+        Local storage always stays active. Cloud sync is an additional backup and continuity layer.
       </div>
     </div>
   );

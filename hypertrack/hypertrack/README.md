@@ -11,16 +11,15 @@ The app is designed to reproduce the core practical loop of RP-style hypertrophy
 
 This repository is intentionally simple:
 
-- static hosting friendly
-- one tiny build step for deploy-time config injection
+- Worker-friendly static asset app
 - one `index.html`
 - one `app.jsx`
-- one generated `config.js`
+- one runtime-served `config.js`
 - optional Supabase auth and sync
 
 Cloudflare deployment note:
 
-- the app now supports build-time injection of Supabase public config through `config.js`
+- the app now serves public Supabase config through a Cloudflare Worker route
 
 ## What the app does
 
@@ -117,9 +116,13 @@ That lets the first resumed workout still produce weight suggestions immediately
   - session logging
   - Supabase auth and sync
 - `config.js`
-  - browser-readable deploy config
-- `build-config.mjs`
-  - generates `config.js` from Cloudflare Pages environment variables
+  - local fallback config for non-Worker environments
+- `worker.js`
+  - serves runtime config and forwards all other requests to static assets
+- `wrangler.jsonc`
+  - Worker and asset configuration
+- `.dev.vars.example`
+  - local Worker environment variable template
 
 ## Local persistence
 
@@ -210,11 +213,11 @@ with check (auth.uid() = user_id);
 
 ### Supabase auth flow in the app
 
-The app exposes a Supabase panel on the welcome screen and home screen.
+The app exposes an account panel in the UI.
 
 The clean production flow is:
 
-- Supabase URL and anon key are injected at deploy time
+- Supabase URL and anon key are served from the Worker at runtime
 - the user only enters email and password
 
 Then:
@@ -228,12 +231,12 @@ Then:
 Before using Supabase auth, configure your project:
 
 1. Enable Email auth in Supabase Auth.
-2. If email confirmation is enabled, add your Cloudflare Pages URL to the allowed site / redirect settings.
-3. Keep your project URL and anon key ready for Cloudflare Pages environment variables.
+2. If email confirmation is enabled, add your deployed Cloudflare URL to the allowed site / redirect settings.
+3. Keep your project URL and anon key ready for Cloudflare Worker environment variables.
 
 If you test locally and confirmation emails are enabled, also add your local URL such as:
 
-- `http://localhost:4173`
+- `http://localhost:8787`
 
 ### What the app syncs
 
@@ -253,38 +256,54 @@ The Supabase anon key is meant to be used in the browser. Do not place your Supa
 
 ## Running locally
 
-Because the app loads JSX in the browser, serve the directory over a local static server instead of opening `index.html` directly from Finder.
+Run the app through Wrangler so the Worker can provide runtime config.
 
-Example:
+1. Copy the env template:
 
 ```bash
 cd /Users/cianoh/hypertrack
-python3 -m http.server 4173
+cp .dev.vars.example .dev.vars
+```
+
+2. Edit `.dev.vars` with your real values:
+
+```txt
+HYPERTRACK_SUPABASE_URL="https://your-project-ref.supabase.co"
+HYPERTRACK_SUPABASE_ANON_KEY="your-anon-or-publishable-key"
+```
+
+3. Start local dev:
+
+```bash
+cd /Users/cianoh/hypertrack
+npx wrangler dev
 ```
 
 Then open:
 
 ```txt
-http://localhost:4173
+http://localhost:8787
 ```
 
-## Deploying to Cloudflare Pages
+If you want a plain static fallback for visual-only testing, `config.js` will keep the app from crashing, but account sync is intended to be tested through Wrangler.
 
-This is now a very small build-time config injection flow.
+## Deploying to Cloudflare
 
-Use these settings in Cloudflare Pages:
+Deploy this as a Worker with static assets, not as a static-only Pages site.
 
-- Framework preset: `None`
-- Build command: `node build-config.mjs`
-- Build output directory: `/`
-- Root directory: `hypertrack` if deploying from the monorepo root
-
-Environment variables to add in Cloudflare Pages:
+Runtime variables to add:
 
 - `HYPERTRACK_SUPABASE_URL`
 - `HYPERTRACK_SUPABASE_ANON_KEY`
 
 These values are public client values. Do not use the Supabase service role key.
+
+Deploy with Wrangler:
+
+```bash
+cd /Users/cianoh/hypertrack
+npx wrangler deploy
+```
 
 With those set, the deployed app will stop asking users for Supabase keys and will only ask for email/password.
 
@@ -297,9 +316,10 @@ If you do not want to sign into GitHub in the laptop browser, the easiest workfl
    - `index.html`
    - `app.jsx`
    - `config.js`
-   - `build-config.mjs`
+   - `worker.js`
+   - `wrangler.jsonc`
    - `README.md`
-3. Connect that repo to Cloudflare Pages.
+3. Deploy with Wrangler or connect the repo to a Worker-capable Cloudflare workflow.
 
 ## AI exercise suggestions
 
