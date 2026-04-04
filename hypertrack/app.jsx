@@ -382,6 +382,24 @@ function isBodyweightExercise(exerciseName) {
   return BODYWEIGHT_EXERCISES.has(exerciseName);
 }
 
+function getExerciseTracking(meso, exerciseName) {
+  const tracking = meso?.exerciseTracking?.[exerciseName] || {};
+  return {
+    bodyweight: tracking.bodyweight === true || (tracking.bodyweight == null && isBodyweightExercise(exerciseName)),
+  };
+}
+
+function isBodyweightBlock(meso, blockOrExercise) {
+  if (!blockOrExercise) return false;
+  if (typeof blockOrExercise === "string") {
+    return getExerciseTracking(meso, blockOrExercise).bodyweight;
+  }
+  if (blockOrExercise.bodyweightMode != null) {
+    return Boolean(blockOrExercise.bodyweightMode);
+  }
+  return getExerciseTracking(meso, blockOrExercise.exercise).bodyweight;
+}
+
 function targetRIRForWeek(week) {
   if (week <= 1) return 3;
   if (week <= 3) return 2;
@@ -607,9 +625,10 @@ function getLastPerformance(sessions, muscle, exerciseName) {
         const set = block.sets[setIdx];
         if (!set.done) continue;
         return {
-          weight: Number(set.weight),
+          weight: set.weight === "" ? "" : Number(set.weight),
           reps: Number(set.reps) || 10,
           rir: Number(set.rir),
+          bodyweightMode: Boolean(block.bodyweightMode) || isBodyweightExercise(block.exercise),
         };
       }
     }
@@ -619,7 +638,7 @@ function getLastPerformance(sessions, muscle, exerciseName) {
 
 function calcNextWeight({ sessions, muscle, exerciseName, increment, week }) {
   const previous = getLastPerformance(sessions, muscle, exerciseName);
-  if (!previous || Number.isNaN(previous.weight)) {
+  if (!previous || previous.weight === "" || Number.isNaN(Number(previous.weight))) {
     return "";
   }
   const targetRIR = targetRIRForWeek(week);
@@ -645,6 +664,8 @@ function buildSeedSession(exercises, prevWeights, increments) {
       return {
         exercise,
         increment: increments?.[exercise] || DEFAULT_INCREMENT,
+        bodyweightMode: isBodyweightExercise(exercise),
+        notes: "",
         sets: [
           {
             id: Date.now() + Math.random(),
@@ -664,6 +685,7 @@ function buildSeedSession(exercises, prevWeights, increments) {
     synthetic: true,
     log,
     feedback: {},
+    notes: "",
   };
 }
 
@@ -677,6 +699,7 @@ function createSyntheticSession(daySlot, week) {
     synthetic: true,
     log: {},
     feedback: {},
+    notes: "",
   };
 }
 
@@ -693,27 +716,23 @@ function buildSessionState(meso, daySlotId, cloudUser) {
     const setsPerExercise = Math.max(2, Math.round((meso.weeklyVolume[muscle] || MEV_MRV[muscle][0]) / Math.max(1, selected.length)));
     log[muscle] = selected.map((exercise) => {
       const increment = meso.increments[exercise] || DEFAULT_INCREMENT;
-      const suggestedWeight = isBodyweightExercise(exercise) && currentBodyweight !== ""
-        ? currentBodyweight
-        : calcNextWeight({
-            sessions: meso.sessions,
-            muscle,
-            exerciseName: exercise,
-            increment,
-            week: meso.week,
-          });
+      const bodyweightMode = getExerciseTracking(meso, exercise).bodyweight;
+      const suggestedWeight = calcNextWeight({
+        sessions: meso.sessions,
+        muscle,
+        exerciseName: exercise,
+        increment,
+        week: meso.week,
+      });
       const previous = getLastPerformance(meso.sessions, muscle, exercise);
       return {
         exercise,
         increment,
+        bodyweightMode,
+        notes: "",
         sets: Array.from({ length: setsPerExercise }).map((_, idx) => ({
           id: Date.now() + Math.random() + idx,
-          weight:
-            isBodyweightExercise(exercise) && currentBodyweight !== ""
-              ? suggestedWeight
-              : idx === 0
-                ? suggestedWeight
-                : "",
+          weight: idx === 0 && suggestedWeight !== "" ? suggestedWeight : "",
           reps: previous?.reps || 10,
           rir: targetRIR,
           done: false,
@@ -730,6 +749,7 @@ function buildSessionState(meso, daySlotId, cloudUser) {
     started: new Date().toISOString(),
     log,
     feedback: {},
+    notes: "",
   };
 }
 
@@ -810,16 +830,22 @@ function getCompletedSetRowsForExercise(sessions, muscle, exerciseName) {
     const blocks = session?.log?.[muscle] || [];
     blocks.forEach((block) => {
       if (block.exercise !== exerciseName) return;
+      const bodyweightMode = Boolean(block.bodyweightMode) || isBodyweightExercise(block.exercise);
       const completedSets = (block.sets || []).filter(
-        (set) => set.done && set.weight !== "" && !Number.isNaN(Number(set.weight))
+        (set) =>
+          set.done &&
+          (bodyweightMode || (set.weight !== "" && !Number.isNaN(Number(set.weight))))
       );
       if (!completedSets.length) return;
       rows.push({
         week: session.week,
         date: session.date,
         synthetic: Boolean(session.synthetic),
+        bodyweightMode,
+        notes: block.notes || "",
+        sessionNotes: session.notes || "",
         sets: completedSets.map((set) => ({
-          weight: Number(set.weight),
+          weight: set.weight === "" ? "" : Number(set.weight),
           reps: Number(set.reps) || 0,
           rir: set.rir === "" ? "" : Number(set.rir),
         })),
@@ -855,8 +881,10 @@ function getExerciseTrendRows(meso, options = {}) {
         const chronological = [...history].sort(
           (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
         );
-        const first = chronological[0]?.sets?.[0];
-        const latest = chronological[chronological.length - 1]?.sets?.[chronological[chronological.length - 1].sets.length - 1];
+        const first = chronological[0]?.sets?.find((set) => set.weight !== "" && !Number.isNaN(Number(set.weight)));
+        const latest = [...(chronological[chronological.length - 1]?.sets || [])]
+          .reverse()
+          .find((set) => set.weight !== "" && !Number.isNaN(Number(set.weight)));
         if (!first || !latest) return;
         trends.push({
           key,
@@ -886,6 +914,235 @@ function getMesoSummaryStats(meso) {
     upwardCount: upward.length,
     topMovers: trends.slice(0, 3),
     strongest: upward[0] || trends[0] || null,
+  };
+}
+
+function getPhaseGuide(meso) {
+  if (!meso) return null;
+  const currentWeek = Math.min(meso.week, meso.totalWeeks);
+  const ratio = meso.totalWeeks <= 1 ? 1 : (currentWeek - 1) / Math.max(1, meso.totalWeeks - 1);
+  if (meso.week > meso.totalWeeks) {
+    return {
+      label: "Review",
+      title: "Block Complete",
+      copy: "Deload, review what progressed best, and carry the strongest structure into the next phase.",
+      focus: "Use the archive to keep what worked and trim what did not.",
+      tone: "good",
+    };
+  }
+  if (currentWeek <= 1) {
+    return {
+      label: "Foundation",
+      title: "Establish stable baselines",
+      copy: "Week 1 is about matching the target RIR cleanly so later progression is built on reliable performance.",
+      focus: "Keep exercise selection stable and log honest RIR.",
+      tone: "neutral",
+    };
+  }
+  if (currentWeek === meso.totalWeeks) {
+    return {
+      label: "Peak",
+      title: "Final hard week",
+      copy: "This is the sharpest phase of the block. Push only where performance supports it and expect fatigue to rise.",
+      focus: "Finish the week, then deload or restart from the archive.",
+      tone: "warn",
+    };
+  }
+  if (ratio < 0.5) {
+    return {
+      label: "Build",
+      title: "Accumulate productive work",
+      copy: "Performance should climb while recovery stays manageable. Let volume move up only when the feedback justifies it.",
+      focus: "Own the target RIR before chasing extra load.",
+      tone: "good",
+    };
+  }
+  return {
+    label: "Push",
+    title: "Drive progression with discipline",
+    copy: "Work is heavy enough now that fatigue matters. Keep the structure stable and earn progression from repeatable effort.",
+    focus: "Push load when the last completed work was easier than target.",
+    tone: "warn",
+  };
+}
+
+function getLatestFeedbackForMuscle(meso, muscle) {
+  for (let idx = (meso?.sessions || []).length - 1; idx >= 0; idx -= 1) {
+    const session = meso.sessions[idx];
+    if (session.synthetic) continue;
+    const feedback = session?.feedback?.[muscle];
+    if (!feedback) continue;
+    return {
+      week: session.week,
+      date: session.date,
+      feedback,
+    };
+  }
+  return null;
+}
+
+function getRecoveryStatusForMuscle(meso, muscle) {
+  const latest = getLatestFeedbackForMuscle(meso, muscle);
+  if (!latest) {
+    return {
+      tone: "neutral",
+      label: "Awaiting feedback",
+      detail: "Log and rate this muscle once to unlock recovery guidance.",
+    };
+  }
+  const { pump = 0, soreness = 0, performance = 1 } = latest.feedback;
+  if (soreness >= 3 || performance === 0) {
+    return {
+      tone: "warn",
+      label: "Recover",
+      detail: "Recent fatigue is high. Hold back on extra work and prioritize quality execution.",
+    };
+  }
+  if (soreness >= 2 || performance === 1) {
+    return {
+      tone: "neutral",
+      label: "Hold",
+      detail: "Recovery is mixed. Keep volume steady until performance improves.",
+    };
+  }
+  if (pump >= 2 && performance >= 2 && soreness <= 1) {
+    return {
+      tone: "good",
+      label: "Ready",
+      detail: "Recovery looks good. This muscle can keep pushing the plan.",
+    };
+  }
+  if (pump <= 1 && soreness <= 1) {
+    return {
+      tone: "good",
+      label: "Ready",
+      detail: "Fatigue is controlled. Stay on plan and let progression come from execution.",
+    };
+  }
+  return {
+    tone: "neutral",
+    label: "Hold",
+    detail: "Keep the current dose of work until feedback gets clearer.",
+  };
+}
+
+function getRecoveryOverview(meso, muscles) {
+  const items = (muscles || []).map((muscle) => ({
+    muscle,
+    ...getRecoveryStatusForMuscle(meso, muscle),
+  }));
+  return {
+    items,
+    ready: items.filter((item) => item.label === "Ready").length,
+    hold: items.filter((item) => item.label === "Hold").length,
+    recover: items.filter((item) => item.label === "Recover").length,
+  };
+}
+
+function getProgressionGuide(meso, muscle, exerciseName, bodyweightModeOverride) {
+  const previous = getLastPerformance(meso?.sessions || [], muscle, exerciseName);
+  const target = targetRIRForWeek(meso?.week || 1);
+  const unitLabel = getUnitLabel(meso?.unit);
+  const bodyweightMode =
+    bodyweightModeOverride != null
+      ? bodyweightModeOverride
+      : previous?.bodyweightMode || getExerciseTracking(meso, exerciseName).bodyweight;
+  if (!previous || (!bodyweightMode && (previous.weight === "" || Number.isNaN(Number(previous.weight))))) {
+    return {
+      tone: "neutral",
+      label: "Establish baseline",
+      detail: "Log one completed set for this movement to unlock progression guidance.",
+    };
+  }
+  const actual = Number(previous.rir);
+  if (bodyweightMode) {
+    if (Number.isNaN(actual)) {
+      return {
+        tone: "neutral",
+        label: "Repeat and log RIR",
+        detail:
+          previous.weight === "" || Number(previous.weight) === 0
+            ? `Last completed set was ${previous.reps} reps at bodyweight. Add RIR to refine the next recommendation.`
+            : `Last completed set was BW + ${formatKg(previous.weight)} ${unitLabel} for ${previous.reps} reps. Add RIR to refine the next recommendation.`,
+      };
+    }
+    if (actual > target) {
+      return {
+        tone: "good",
+        label: "Add reps or load",
+        detail:
+          previous.weight === "" || Number(previous.weight) === 0
+            ? `Last set was easier than target at ${actual} RIR vs ${target}. Beat reps or add external load if available.`
+            : `Last set was easier than target at ${actual} RIR vs ${target}. Stay with BW + ${formatKg(previous.weight)} ${unitLabel} and beat reps, or add more load.`,
+      };
+    }
+    if (actual < target) {
+      return {
+        tone: "warn",
+        label: "Keep bodyweight steady",
+        detail: `Last set was harder than target at ${actual} RIR vs ${target}. Clean up execution before pushing more.`,
+      };
+    }
+    return {
+      tone: "neutral",
+      label: "Repeat and beat reps",
+      detail: `Last set matched the ${target} RIR target. Stay at bodyweight and improve reps or execution.`,
+    };
+  }
+  const nextWeight = calcNextWeight({
+    sessions: meso?.sessions || [],
+    muscle,
+    exerciseName,
+    increment: meso?.increments?.[exerciseName] || DEFAULT_INCREMENT,
+    week: meso?.week || 1,
+  });
+  if (Number.isNaN(actual)) {
+    return {
+      tone: "neutral",
+      label: "Use last load as baseline",
+      detail: `Last completed set was ${formatKg(previous.weight)} ${unitLabel} for ${previous.reps} reps. Add RIR to sharpen the next recommendation.`,
+    };
+  }
+  if (actual > target) {
+    return {
+      tone: "good",
+      label: "Increase load",
+      detail: `Last set was easier than target at ${actual} RIR vs ${target}. Aim for ${nextWeight} ${unitLabel} next time.`,
+    };
+  }
+  if (actual < target) {
+    return {
+      tone: "warn",
+      label: "Reduce slightly",
+      detail: `Last set was harder than target at ${actual} RIR vs ${target}. Aim for ${nextWeight} ${unitLabel} next time.`,
+    };
+  }
+  return {
+    tone: "neutral",
+    label: "Hold and beat reps",
+    detail: `Last set matched the ${target} RIR target. Repeat ${nextWeight} ${unitLabel} and improve reps or execution.`,
+  };
+}
+
+function getCoachToneStyles(tone) {
+  if (tone === "good") {
+    return {
+      borderColor: "rgba(24, 166, 111, 0.22)",
+      background: "rgba(24, 166, 111, 0.08)",
+      color: "var(--ok)",
+    };
+  }
+  if (tone === "warn") {
+    return {
+      borderColor: "rgba(232, 122, 0, 0.24)",
+      background: "rgba(232, 122, 0, 0.08)",
+      color: "var(--warn)",
+    };
+  }
+  return {
+    borderColor: "rgba(38, 112, 255, 0.18)",
+    background: "rgba(38, 112, 255, 0.08)",
+    color: "var(--accent)",
   };
 }
 
@@ -977,6 +1234,7 @@ function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveDetail, setArchiveDetail] = useState(null);
+  const [setupTemplate, setSetupTemplate] = useState(null);
   const [manageExercisesOpen, setManageExercisesOpen] = useState(false);
   const [cloudConfig, setCloudConfig] = useState(() => loadSupabaseConfig());
   const [supabaseClient, setSupabaseClient] = useState(null);
@@ -1275,6 +1533,15 @@ function App() {
     const confirmed = window.confirm("Start building a new mesocycle? Your current block will move to the archive when you save the new one.");
     if (!confirmed) return;
     setSessionState(null);
+    setSetupTemplate(null);
+    setScreen("setup");
+  }, []);
+
+  const handleStartFromArchivedTemplate = useCallback((templateMeso) => {
+    setArchiveDetail(null);
+    setArchiveOpen(false);
+    setSessionState(null);
+    setSetupTemplate(templateMeso);
     setScreen("setup");
   }, []);
 
@@ -1353,6 +1620,7 @@ function App() {
       date: new Date().toISOString(),
       log: sessionState.log,
       feedback: sessionState.feedback,
+      notes: sessionState.notes || "",
     };
     let nextMeso = {
       ...meso,
@@ -1375,7 +1643,7 @@ function App() {
       const { muscle, exIdx } = swapTarget;
       const currentExercise = sessionState.log[muscle][exIdx].exercise;
       const increment = meso.increments[nextExercise] || DEFAULT_INCREMENT;
-      const currentBodyweight = getCurrentBodyweightForUnit(cloudUser, meso.unit || DEFAULT_UNIT);
+      const bodyweightMode = getExerciseTracking(meso, nextExercise).bodyweight;
       const nextSession = {
         ...sessionState,
         log: {
@@ -1385,12 +1653,10 @@ function App() {
               ? {
                   exercise: nextExercise,
                   increment,
+                  bodyweightMode,
                   sets: block.sets.map((set) => ({
                     ...set,
-                    weight:
-                      isBodyweightExercise(nextExercise) && currentBodyweight !== ""
-                        ? currentBodyweight
-                        : "",
+                    weight: "",
                     done: false,
                   })),
                 }
@@ -1410,13 +1676,63 @@ function App() {
           [nextExercise]: increment,
           [currentExercise]: meso.increments[currentExercise] || DEFAULT_INCREMENT,
         },
+        exerciseTracking: {
+          ...(meso.exerciseTracking || {}),
+          [nextExercise]: meso.exerciseTracking?.[nextExercise] || {
+            bodyweight: bodyweightMode,
+          },
+        },
       };
       setSessionState(nextSession);
       await persistMeso(nextMeso);
       setSwapTarget(null);
       setToast("Exercise swapped");
     },
-    [cloudUser, meso, persistMeso, sessionState, swapTarget]
+    [meso, persistMeso, sessionState, swapTarget]
+  );
+
+  const handleExerciseTrackingUpdate = useCallback(
+    async (muscle, exIdx, exerciseName, bodyweightMode) => {
+      if (!meso || !sessionState) return;
+      const currentBodyweight = getCurrentBodyweightForUnit(cloudUser, meso.unit || DEFAULT_UNIT);
+      const nextSession = {
+        ...sessionState,
+        log: {
+          ...sessionState.log,
+          [muscle]: sessionState.log[muscle].map((block, idx) => {
+            if (idx !== exIdx) return block;
+            const shouldClearWeights =
+              bodyweightMode &&
+              block.sets.every(
+                (set) =>
+                  set.weight === "" ||
+                  (currentBodyweight !== "" && String(set.weight) === String(currentBodyweight))
+              );
+            return {
+              ...block,
+              bodyweightMode,
+              sets: shouldClearWeights
+                ? block.sets.map((set) => ({ ...set, weight: "" }))
+                : block.sets,
+            };
+          }),
+        },
+      };
+      const nextMeso = {
+        ...meso,
+        exerciseTracking: {
+          ...(meso.exerciseTracking || {}),
+          [exerciseName]: {
+            ...(meso.exerciseTracking?.[exerciseName] || {}),
+            bodyweight: bodyweightMode,
+          },
+        },
+      };
+      setSessionState(nextSession);
+      await persistMeso(nextMeso);
+      setToast(bodyweightMode ? "Bodyweight mode enabled" : "Bodyweight mode disabled");
+    },
+    [cloudUser, meso, persistMeso, sessionState]
   );
 
   const handleIncrementSave = useCallback(
@@ -1490,6 +1806,12 @@ function App() {
           ...meso.increments,
           [canonical]: meso.increments[canonical] || DEFAULT_INCREMENT,
         },
+        exerciseTracking: {
+          ...(meso.exerciseTracking || {}),
+          [canonical]: meso.exerciseTracking?.[canonical] || {
+            bodyweight: isBodyweightExercise(canonical),
+          },
+        },
       };
       await persistMeso(nextMeso);
       setToast("Exercise added to future sessions");
@@ -1525,12 +1847,17 @@ function App() {
       )}
       {screen === "setup" && (
         <SetupScreen
+          initialTemplate={setupTemplate}
           onComplete={async (nextMeso, message) => {
+            setSetupTemplate(null);
             await createNewActiveMeso(nextMeso);
             setToast(message);
             setScreen("home");
           }}
-          onCancel={() => setScreen(meso ? "home" : "welcome")}
+          onCancel={() => {
+            setSetupTemplate(null);
+            setScreen(meso ? "home" : "welcome");
+          }}
         />
       )}
       {screen === "home" && meso && (
@@ -1579,6 +1906,7 @@ function App() {
             setIncrementTarget({ muscle, exIdx, currentInc, exerciseName })
           }
           onOpenHistory={(muscle, exerciseName) => setHistoryTarget({ muscle, exerciseName })}
+          onToggleBodyweight={handleExerciseTrackingUpdate}
         />
       )}
       {swapTarget && meso && sessionState && (
@@ -1635,6 +1963,7 @@ function App() {
       {archiveDetail && (
         <ArchivedMesoDetailSheet
           meso={archiveDetail}
+          onUseAsTemplate={handleStartFromArchivedTemplate}
           onClose={() => setArchiveDetail(null)}
         />
       )}
@@ -1802,7 +2131,7 @@ function WelcomeScreen({
   );
 }
 
-function SetupScreen({ onComplete, onCancel }) {
+function SetupScreen({ initialTemplate, onComplete, onCancel }) {
   const [mode, setMode] = useState("choose");
   const [step, setStep] = useState(0);
   const [equipment, setEquipment] = useState(DEFAULT_EQUIPMENT);
@@ -1855,6 +2184,37 @@ function SetupScreen({ onComplete, onCancel }) {
     setWeightStep((prev) => clamp(prev, 0, Math.max(0, activeMuscles.length - 1)));
   }, [activeMuscles.length]);
 
+  useEffect(() => {
+    if (!initialTemplate) return;
+    const templateDaySlots = normalizeDaySlots(initialTemplate.split?.daySlots || getMesoDaySlots(initialTemplate));
+    const templateExercises = Object.fromEntries(
+      MUSCLES.map((muscle) => [muscle, (initialTemplate.exercises?.[muscle] || []).slice(0, 3)])
+    );
+    const templateIncrements = { ...(initialTemplate.increments || {}) };
+    const templateVolumes = Object.fromEntries(
+      MUSCLES.map((muscle) => {
+        const [mev, mrv] = MEV_MRV[muscle];
+        return [muscle, clamp(initialTemplate.weeklyVolume?.[muscle] || mev, mev, mrv)];
+      })
+    );
+    setMode("fresh");
+    setStep(0);
+    setEquipment(initialTemplate.equipment?.length ? initialTemplate.equipment : DEFAULT_EQUIPMENT);
+    setUnit(UNIT_OPTIONS.includes(initialTemplate.unit) ? initialTemplate.unit : DEFAULT_UNIT);
+    setWeeks([4, 5, 6, 8].includes(initialTemplate.totalWeeks) ? initialTemplate.totalWeeks : 6);
+    setSelectedPresetKey(initialTemplate.split?.presetKey || "custom");
+    setSplitName(initialTemplate.splitName || initialTemplate.split?.name || "Custom Split");
+    setSplitDays(templateDaySlots);
+    setExercises(templateExercises);
+    setIncrementsSetup(templateIncrements);
+    setWeeklyVol(templateVolumes);
+    setResumeWeek(1);
+    setPrevWeights({});
+    setWeightStep(0);
+    setDoneWeeks([]);
+    setExerciseDrafts({});
+  }, [initialTemplate]);
+
   const applyPresetSelection = (presetKey) => {
     const preset = instantiatePreset(presetKey);
     setSelectedPresetKey(presetKey);
@@ -1899,9 +2259,12 @@ function SetupScreen({ onComplete, onCancel }) {
   };
 
   const buildExerciseSelection = () => {
-    const recommended = getRecommendedExercisePlan(equipment);
+    const sourceExercises =
+      initialTemplate && Object.values(exercises).some((list) => (list || []).length)
+        ? exercises
+        : getRecommendedExercisePlan(equipment);
     const { normalizedExercises, normalizedIncrements } = normalizeExercisesAndIncrements(
-      recommended,
+      sourceExercises,
       incrementsSetup
     );
     setExercises(normalizedExercises);
@@ -1950,6 +2313,18 @@ function SetupScreen({ onComplete, onCancel }) {
       incrementsSetup
     );
     const daySlots = normalizeDaySlots(splitDays);
+    const exerciseTracking = Object.fromEntries(
+      Object.values(normalizedExercises)
+        .flat()
+        .map((exercise) => [
+          exercise,
+          {
+            bodyweight:
+              initialTemplate?.exerciseTracking?.[exercise]?.bodyweight ??
+              isBodyweightExercise(exercise),
+          },
+        ])
+    );
     const meso = {
       id: Date.now(),
       week: 1,
@@ -1967,6 +2342,8 @@ function SetupScreen({ onComplete, onCancel }) {
       exercises: normalizedExercises,
       weeklyVolume: weeklyVol,
       increments: normalizedIncrements,
+      exerciseTracking,
+      basedOnMesoId: initialTemplate?.remoteId || initialTemplate?.id || null,
       ownerUserId: null,
     };
     await onComplete(meso, "Mesocycle started");
@@ -1979,6 +2356,18 @@ function SetupScreen({ onComplete, onCancel }) {
     );
     const daySlots = normalizeDaySlots(splitDays);
     const seed = buildSeedSession(normalizedExercises, prevWeights, normalizedIncrements);
+    const exerciseTracking = Object.fromEntries(
+      Object.values(normalizedExercises)
+        .flat()
+        .map((exercise) => [
+          exercise,
+          {
+            bodyweight:
+              initialTemplate?.exerciseTracking?.[exercise]?.bodyweight ??
+              isBodyweightExercise(exercise),
+          },
+        ])
+    );
     const meso = {
       id: Date.now(),
       week: resumeWeek,
@@ -1996,6 +2385,7 @@ function SetupScreen({ onComplete, onCancel }) {
       exercises: normalizedExercises,
       weeklyVolume: calcVolumeForWeek(resumeWeek, weeks),
       increments: normalizedIncrements,
+      exerciseTracking,
       resumed: true,
       ownerUserId: null,
     };
@@ -2185,7 +2575,7 @@ function SetupScreen({ onComplete, onCancel }) {
         </div>
       )}
       <button className="btn-primary" onClick={buildExerciseSelection}>
-        Build Exercise Plan
+        {initialTemplate ? "Review Exercise Plan" : "Build Exercise Plan"}
       </button>
     </div>
   );
@@ -2579,6 +2969,8 @@ function HomeScreen({
   const progress = meso.totalWeeks > 0 ? clamp(((meso.week - 1) / meso.totalWeeks) * 100, 0, 100) : 0;
   const complete = meso.week > meso.totalWeeks;
   const summary = getMesoSummaryStats(meso);
+  const phaseGuide = getPhaseGuide(meso);
+  const recoveryOverview = getRecoveryOverview(meso, activeMuscles);
   const unitLabel = getUnitLabel(meso?.unit);
   return (
     <div className="stack">
@@ -2617,19 +3009,47 @@ function HomeScreen({
       </div>
 
       {complete ? (
-        <div className="card stack" style={{ textAlign: "center" }}>
-          <div className="display gold" style={{ fontSize: 80, lineHeight: 0.85 }}>
-            🏆
+        <div className="stack">
+          <div className="card hero-panel stack" style={{ textAlign: "center" }}>
+            <div className="display gold" style={{ fontSize: 80, lineHeight: 0.85 }}>
+              🏆
+            </div>
+            <div className="display" style={{ fontSize: 54, lineHeight: 0.88 }}>
+              Meso Complete
+            </div>
+            <div className="small">
+              {phaseGuide?.copy || "Deload, assess fatigue, and start a fresh mesocycle when ready."}
+            </div>
+            <div className="grid-3">
+              <div className="card stack metric-card">
+                <div className="eyebrow">Sessions Logged</div>
+                <div className="display" style={{ fontSize: 38, lineHeight: 0.88 }}>
+                  {(meso.sessions || []).filter((session) => !session.synthetic).length}
+                </div>
+              </div>
+              <div className="card stack metric-card">
+                <div className="eyebrow">Top Mover</div>
+                <div className="display" style={{ fontSize: 30, lineHeight: 0.92 }}>
+                  {summary.strongest ? summary.strongest.exercise : "Waiting"}
+                </div>
+                <div className="tiny muted">
+                  {summary.strongest
+                    ? `${summary.strongest.delta > 0 ? "+" : ""}${formatKg(summary.strongest.delta)} ${unitLabel} across the block`
+                    : "Not enough logged history yet."}
+                </div>
+              </div>
+              <div className="card stack metric-card">
+                <div className="eyebrow">Archive Ready</div>
+                <div className="display" style={{ fontSize: 38, lineHeight: 0.88 }}>
+                  {archivedMesos.length}
+                </div>
+                <div className="tiny muted">previous mesocycles available for comparison</div>
+              </div>
+            </div>
+            <button className="btn-primary" onClick={onNewMeso}>
+              Start New Meso
+            </button>
           </div>
-          <div className="display" style={{ fontSize: 54, lineHeight: 0.88 }}>
-            Meso Complete
-          </div>
-          <div className="small">
-            Deload, assess fatigue, and start a fresh mesocycle when ready.
-          </div>
-          <button className="btn-primary" onClick={onNewMeso}>
-            Start New Meso
-          </button>
         </div>
       ) : (
         <>
@@ -2647,6 +3067,9 @@ function HomeScreen({
               <div className="status-cluster">
                 <span className="status-chip status-chip-good">{doneDayTypes.length}/{daySlots.length} sessions</span>
                 <span className="status-chip">{meso.splitName || meso.split?.name || "Custom split"}</span>
+                <span className="status-chip" style={getCoachToneStyles(phaseGuide?.tone)}>
+                  {phaseGuide?.label}
+                </span>
               </div>
             </div>
             <div className="week-hero">
@@ -2701,6 +3124,55 @@ function HomeScreen({
               <button className="btn-ghost" onClick={onManageExercises}>
                 Manage Plan
               </button>
+            </div>
+          </div>
+
+          <div className="page-section-head">
+            <div className="eyebrow">Coaching</div>
+            <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+              Phase And Recovery Guide
+            </div>
+          </div>
+
+          <div className="grid-2">
+            <div className="card stack section-card">
+              <div className="title-row">
+                <div>
+                  <div className="eyebrow">Current Phase</div>
+                  <div className="display" style={{ fontSize: 36, lineHeight: 0.92 }}>
+                    {phaseGuide?.title}
+                  </div>
+                </div>
+                <div className="status-chip" style={getCoachToneStyles(phaseGuide?.tone)}>
+                  {phaseGuide?.label}
+                </div>
+              </div>
+              <div className="small">{phaseGuide?.copy}</div>
+              <div className="tiny muted">{phaseGuide?.focus}</div>
+            </div>
+            <div className="card stack section-card">
+              <div className="title-row">
+                <div>
+                  <div className="eyebrow">Recovery Signals</div>
+                  <div className="display" style={{ fontSize: 36, lineHeight: 0.92 }}>
+                    Readiness This Week
+                  </div>
+                </div>
+                <div className="mono tiny gold">
+                  {recoveryOverview.ready} ready · {recoveryOverview.hold} hold · {recoveryOverview.recover} recover
+                </div>
+              </div>
+              {(recoveryOverview.items || []).slice(0, 4).map((item) => (
+                <div key={`recovery-${item.muscle}`} className="title-row">
+                  <div>
+                    <div className="small">{item.muscle}</div>
+                    <div className="tiny muted">{item.detail}</div>
+                  </div>
+                  <div className="status-chip" style={getCoachToneStyles(item.tone)}>
+                    {item.label}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -3592,6 +4064,7 @@ function SessionScreen({
   onSwap,
   onEditIncrement,
   onOpenHistory,
+  onToggleBodyweight,
 }) {
   const muscles = Object.keys(sessionState.log || {});
   const allDone = muscles.every((muscle) => isMuscleDone(sessionState, muscle));
@@ -3599,6 +4072,7 @@ function SessionScreen({
   const unitLabel = getUnitLabel(meso?.unit);
   const unitStep = getUnitStep(meso?.unit);
   const targetRIR = targetRIRForWeek(meso.week);
+  const phaseGuide = getPhaseGuide(meso);
   const completedMuscles = muscles.filter((muscle) => isMuscleDone(sessionState, muscle)).length;
 
   const updateSet = (muscle, exIdx, setIdx, field, value) => {
@@ -3631,10 +4105,7 @@ function SessionScreen({
                   ...block.sets,
                   {
                     id: Date.now() + Math.random(),
-                    weight:
-                      isBodyweightExercise(block.exercise) && currentBodyweight !== ""
-                        ? currentBodyweight
-                        : "",
+                    weight: "",
                     reps: 10,
                     rir: targetRIR,
                     done: false,
@@ -3660,6 +4131,18 @@ function SessionScreen({
     }));
   };
 
+  const updateExerciseNotes = (muscle, exIdx, notes) => {
+    setSessionState((current) => ({
+      ...current,
+      log: {
+        ...current.log,
+        [muscle]: current.log[muscle].map((block, idx) =>
+          idx === exIdx ? { ...block, notes } : block
+        ),
+      },
+    }));
+  };
+
   return (
     <div className="stack">
       <div className="sticky">
@@ -3671,6 +4154,11 @@ function SessionScreen({
               </div>
               <div className="mono tiny gold">
                 Week {meso.week} · Target RIR {targetRIRForWeek(meso.week)}
+              </div>
+              <div className="row" style={{ marginTop: 8 }}>
+                <span className="status-chip" style={getCoachToneStyles(phaseGuide?.tone)}>
+                  {phaseGuide?.label}
+                </span>
               </div>
             </div>
             <div className="row">
@@ -3700,7 +4188,7 @@ function SessionScreen({
           </div>
         </div>
         <div className="small">
-          Target RIR keeps load progression anchored to repeatable effort. New sets are prefilled for week {meso.week} so the workout starts from the mesocycle target rather than a blank slate.
+          {phaseGuide?.title}: {phaseGuide?.focus}
         </div>
         <div className="goal-track">
           <div className="goal-fill" style={{ width: `${clamp((completedMuscles / Math.max(1, muscles.length)) * 100, 0, 100)}%` }} />
@@ -3718,101 +4206,141 @@ function SessionScreen({
                 {rated ? "✓ Rated" : done ? "Rate now ↓" : ""}
               </div>
             </div>
-            {(sessionState.log[muscle] || []).map((block, exIdx) => (
-              <div key={`${muscle}-${block.exercise}-${exIdx}`} className="exercise-block stack">
-                <div className="exercise-header">
-                  <div className="stack" style={{ gap: 6 }}>
-                    <div className="display" style={{ fontSize: 28 }}>
-                      {block.exercise}
-                    </div>
-                    <div className="exercise-meta">
-                      <span className="status-chip">Target {targetRIR} RIR</span>
-                      <span className="status-chip">Inc ±{formatKg(block.increment)}{unitLabel}</span>
-                      {isBodyweightExercise(block.exercise) && currentBodyweight !== "" && (
-                        <span className="status-chip status-chip-good">
-                          BW {currentBodyweight} {unitLabel}
-                        </span>
-                      )}
-                      {(() => {
-                        const previous = getLastPerformance(meso.sessions, muscle, block.exercise);
-                        return previous ? (
-                          <span className="status-chip status-chip-good">
-                            Last {formatKg(previous.weight)} {unitLabel} x {previous.reps} @ {previous.rir} RIR
+            {(sessionState.log[muscle] || []).map((block, exIdx) => {
+              const progressionGuide = getProgressionGuide(
+                meso,
+                muscle,
+                block.exercise,
+                block.bodyweightMode
+              );
+              return (
+                <div
+                  key={`${muscle}-${block.exercise}-${exIdx}`}
+                  className={`exercise-block stack ${block.bodyweightMode ? "exercise-block-bodyweight" : ""}`}
+                >
+                  <div className="exercise-header">
+                    <div className="stack" style={{ gap: 6 }}>
+                      <div className="display" style={{ fontSize: 28 }}>
+                        {block.exercise}
+                      </div>
+                      <div className="exercise-meta">
+                        <span className="status-chip">Target {targetRIR} RIR</span>
+                        <span className="status-chip">Inc ±{formatKg(block.increment)}{unitLabel}</span>
+                        {block.bodyweightMode && (
+                          <span className="status-chip" style={getCoachToneStyles("good")}>
+                            Bodyweight Mode
                           </span>
-                        ) : (
-                          <span className="status-chip">First log for this movement</span>
-                        );
-                      })()}
+                        )}
+                        {block.bodyweightMode && currentBodyweight !== "" && (
+                          <span className="status-chip status-chip-good">
+                            BW {currentBodyweight} {unitLabel}
+                          </span>
+                        )}
+                        {(() => {
+                          const previous = getLastPerformance(meso.sessions, muscle, block.exercise);
+                          return previous ? (
+                            <span className="status-chip status-chip-good">
+                              {previous.bodyweightMode
+                                ? previous.weight === "" || Number(previous.weight) === 0
+                                  ? `Last BW x ${previous.reps} @ ${previous.rir} RIR`
+                                  : `Last BW + ${formatKg(previous.weight)} ${unitLabel} x ${previous.reps} @ ${previous.rir} RIR`
+                                : `Last ${formatKg(previous.weight)} ${unitLabel} x ${previous.reps} @ ${previous.rir} RIR`}
+                            </span>
+                          ) : (
+                            <span className="status-chip">First log for this movement</span>
+                          );
+                        })()}
+                        <span className="status-chip" style={getCoachToneStyles(progressionGuide.tone)}>
+                          {progressionGuide.label}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="exercise-actions">
+                      <button
+                        className={`btn-ghost ${block.bodyweightMode ? "bodyweight-toggle-active" : ""}`}
+                        onClick={() => onToggleBodyweight(muscle, exIdx, block.exercise, !block.bodyweightMode)}
+                      >
+                        {block.bodyweightMode ? "BW ✓" : "bodyweight"}
+                      </button>
+                      <button
+                        className="badge"
+                        onClick={() => onEditIncrement(muscle, exIdx, block.increment, block.exercise)}
+                      >
+                        ±{formatKg(block.increment)}{unitLabel}
+                      </button>
+                      <button className="btn-ghost" onClick={() => onOpenHistory(muscle, block.exercise)}>
+                        history
+                      </button>
+                      <button className="btn-ghost" onClick={() => onSwap(muscle, exIdx)}>
+                        swap
+                      </button>
                     </div>
                   </div>
-                  <div className="exercise-actions">
-                    <button
-                      className="badge"
-                      onClick={() => onEditIncrement(muscle, exIdx, block.increment, block.exercise)}
-                    >
-                      ±{formatKg(block.increment)}{unitLabel}
-                    </button>
-                    <button className="btn-ghost" onClick={() => onOpenHistory(muscle, block.exercise)}>
-                      history
-                    </button>
-                    <button className="btn-ghost" onClick={() => onSwap(muscle, exIdx)}>
-                      swap
-                    </button>
+                  <div className="tiny muted">{progressionGuide.detail}</div>
+                  <div className="session-grid header">
+                    <div>#</div>
+                    <div>{block.bodyweightMode ? `ADD ${unitLabel.toUpperCase()}` : unitLabel.toUpperCase()}</div>
+                    <div>REPS</div>
+                    <div>RIR</div>
+                    <div>✓</div>
+                  </div>
+                  {block.sets.map((set, setIdx) => (
+                    <div key={set.id} className={`session-grid ${set.done ? "done" : "active"}`}>
+                      <div className="mono tiny gold">{setIdx + 1}</div>
+                      <input
+                        type="number"
+                        step={unitStep}
+                        value={set.weight}
+                        placeholder={block.bodyweightMode ? "optional" : ""}
+                        onChange={(event) => updateSet(muscle, exIdx, setIdx, "weight", event.target.value)}
+                      />
+                      <input
+                        type="number"
+                        value={set.reps}
+                        onChange={(event) => updateSet(muscle, exIdx, setIdx, "reps", Number(event.target.value))}
+                      />
+                      <select
+                        value={set.rir}
+                        onChange={(event) =>
+                          updateSet(
+                            muscle,
+                            exIdx,
+                            setIdx,
+                            "rir",
+                            event.target.value === "" ? "" : Number(event.target.value)
+                          )
+                        }
+                      >
+                        <option value="">-</option>
+                        {[0, 1, 2, 3, 4, 5].map((value) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className={`done-btn ${set.done ? "active" : ""}`}
+                        onClick={() => updateSet(muscle, exIdx, setIdx, "done", !set.done)}
+                      >
+                        ✓
+                      </button>
+                    </div>
+                  ))}
+                  <button className="btn-ghost add-set-btn" onClick={() => addSet(muscle, exIdx)}>
+                    + add set
+                  </button>
+                  <div className="stack" style={{ gap: 6 }}>
+                    <div className="label tiny gold">exercise notes</div>
+                    <textarea
+                      rows="3"
+                      value={block.notes || ""}
+                      onChange={(event) => updateExerciseNotes(muscle, exIdx, event.target.value)}
+                      placeholder="Technique, machine used, pain, grip, tempo, substitutions..."
+                    />
                   </div>
                 </div>
-                <div className="session-grid header">
-                  <div>#</div>
-                  <div>{unitLabel.toUpperCase()}</div>
-                  <div>REPS</div>
-                  <div>RIR</div>
-                  <div>✓</div>
-                </div>
-                {block.sets.map((set, setIdx) => (
-                  <div key={set.id} className={`session-grid ${set.done ? "done" : "active"}`}>
-                    <div className="mono tiny gold">{setIdx + 1}</div>
-                    <input
-                      type="number"
-                      step={unitStep}
-                      value={set.weight}
-                      onChange={(event) => updateSet(muscle, exIdx, setIdx, "weight", event.target.value)}
-                    />
-                    <input
-                      type="number"
-                      value={set.reps}
-                      onChange={(event) => updateSet(muscle, exIdx, setIdx, "reps", Number(event.target.value))}
-                    />
-                    <select
-                      value={set.rir}
-                      onChange={(event) =>
-                        updateSet(
-                          muscle,
-                          exIdx,
-                          setIdx,
-                          "rir",
-                          event.target.value === "" ? "" : Number(event.target.value)
-                        )
-                      }
-                    >
-                      <option value="">-</option>
-                      {[0, 1, 2, 3, 4, 5].map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      className={`done-btn ${set.done ? "active" : ""}`}
-                      onClick={() => updateSet(muscle, exIdx, setIdx, "done", !set.done)}
-                    >
-                      ✓
-                    </button>
-                  </div>
-                ))}
-                <button className="btn-ghost add-set-btn" onClick={() => addSet(muscle, exIdx)}>
-                  + add set
-                </button>
-              </div>
-            ))}
+              );
+            })}
 
             {done && (
               <div className="feedback-card stack">
@@ -3847,6 +4375,20 @@ function SessionScreen({
       })}
 
       <div className="card">
+        <div className="stack" style={{ gap: 8, marginBottom: 16 }}>
+          <div className="label tiny gold">session notes</div>
+          <textarea
+            rows="4"
+            value={sessionState.notes || ""}
+            onChange={(event) =>
+              setSessionState((current) => ({
+                ...current,
+                notes: event.target.value,
+              }))
+            }
+            placeholder="Overall context for this workout: energy, time pressure, equipment availability, unusual fatigue..."
+          />
+        </div>
         {allDone && !allRated ? (
           <div className="mono tiny muted">Rate all muscle groups above to finish.</div>
         ) : allDone && allRated ? (
@@ -4142,9 +4684,10 @@ function ArchiveSheet({ mesos, onClose, onOpenDetail }) {
   );
 }
 
-function ArchivedMesoDetailSheet({ meso, onClose }) {
+function ArchivedMesoDetailSheet({ meso, onClose, onUseAsTemplate }) {
   const summary = getMesoSummaryStats(meso);
   const unitLabel = getUnitLabel(meso?.unit);
+  const phaseGuide = getPhaseGuide(meso);
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="sheet stack" onClick={(event) => event.stopPropagation()}>
@@ -4157,6 +4700,23 @@ function ArchivedMesoDetailSheet({ meso, onClose }) {
           </div>
           <button className="btn-ghost" onClick={onClose}>
             Close
+          </button>
+        </div>
+        <div className="card stack analytics-card">
+          <div className="title-row">
+            <div>
+              <div className="eyebrow">Phase Review</div>
+              <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+                {phaseGuide?.title}
+              </div>
+            </div>
+            <div className="status-chip" style={getCoachToneStyles(phaseGuide?.tone)}>
+              {phaseGuide?.label}
+            </div>
+          </div>
+          <div className="small">{phaseGuide?.copy}</div>
+          <button className="btn-primary" onClick={() => onUseAsTemplate(meso)}>
+            Build New Block From This
           </button>
         </div>
         <div className="grid-2">
@@ -4197,9 +4757,19 @@ function ArchivedMesoDetailSheet({ meso, onClose }) {
 function ExerciseHistoryModal({ meso, muscle, exerciseName, onClose }) {
   const history = getExerciseHistoryRows(meso.sessions, muscle, exerciseName);
   const unitLabel = getUnitLabel(meso?.unit);
-  const first = history.length ? history[history.length - 1].sets[0] : null;
-  const latest = history.length ? history[0].sets[history[0].sets.length - 1] : null;
+  const first = history.length
+    ? history[history.length - 1].sets.find((set) => set.weight !== "" && !Number.isNaN(Number(set.weight))) || null
+    : null;
+  const latest = history.length
+    ? [...history[0].sets].reverse().find((set) => set.weight !== "" && !Number.isNaN(Number(set.weight))) || null
+    : null;
   const delta = first && latest ? latest.weight - first.weight : null;
+  const progressionGuide = getProgressionGuide(
+    meso,
+    muscle,
+    exerciseName,
+    history[0]?.bodyweightMode
+  );
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="sheet stack" onClick={(event) => event.stopPropagation()}>
@@ -4225,9 +4795,27 @@ function ExerciseHistoryModal({ meso, muscle, exerciseName, onClose }) {
                 {delta >= 0 ? "+" : ""}{formatKg(delta)} {unitLabel} across this mesocycle
               </div>
             </>
+          ) : history[0]?.bodyweightMode ? (
+            <div className="small muted">
+              Bodyweight reps are being tracked here. Added load will appear when it is logged.
+            </div>
           ) : (
             <div className="small muted">No completed sets logged yet for this exercise.</div>
           )}
+        </div>
+        <div className="card stack analytics-card">
+          <div className="title-row">
+            <div>
+              <div className="eyebrow">Next Step</div>
+              <div className="display" style={{ fontSize: 30, lineHeight: 0.92 }}>
+                {progressionGuide.label}
+              </div>
+            </div>
+            <div className="status-chip" style={getCoachToneStyles(progressionGuide.tone)}>
+              {progressionGuide.tone === "good" ? "Progress" : progressionGuide.tone === "warn" ? "Caution" : "Baseline"}
+            </div>
+          </div>
+          <div className="small">{progressionGuide.detail}</div>
         </div>
         {history.length ? (
           history.map((item, idx) => (
@@ -4243,10 +4831,30 @@ function ExerciseHistoryModal({ meso, muscle, exerciseName, onClose }) {
                 <div key={`${item.date}-${setIdx}`} className="title-row">
                   <div className="mono tiny">Set {setIdx + 1}</div>
                   <div className="mono tiny gold">
-                    {formatKg(set.weight)} {unitLabel} · {set.reps} reps · RIR {set.rir === "" ? "-" : set.rir}
+                    {item.bodyweightMode
+                      ? set.weight === "" || Number(set.weight) === 0
+                        ? `BW only · ${set.reps} reps · RIR ${set.rir === "" ? "-" : set.rir}`
+                        : `BW + ${formatKg(set.weight)} ${unitLabel} · ${set.reps} reps · RIR ${set.rir === "" ? "-" : set.rir}`
+                      : `${formatKg(set.weight)} ${unitLabel} · ${set.reps} reps · RIR ${set.rir === "" ? "-" : set.rir}`}
                   </div>
                 </div>
               ))}
+              {item.notes ? (
+                <div className="notice" style={{ padding: 12 }}>
+                  <div className="label tiny gold" style={{ marginBottom: 6 }}>
+                    exercise notes
+                  </div>
+                  <div className="small">{item.notes}</div>
+                </div>
+              ) : null}
+              {item.sessionNotes ? (
+                <div className="notice" style={{ padding: 12 }}>
+                  <div className="label tiny gold" style={{ marginBottom: 6 }}>
+                    session context
+                  </div>
+                  <div className="small">{item.sessionNotes}</div>
+                </div>
+              ) : null}
             </div>
           ))
         ) : (

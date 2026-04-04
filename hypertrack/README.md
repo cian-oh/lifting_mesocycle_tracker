@@ -38,6 +38,11 @@ HyperPhases supports:
 - per-exercise weight increment configuration
 - later in-session increment edits when you finally know what the gym setup allows
 - automatic RIR prefills based on the current mesocycle week
+- phase-aware coaching guidance on home and session views
+- rules-based recovery status per muscle using recent feedback
+- progression recommendations per exercise based on prior RIR vs target
+- per-exercise bodyweight mode with optional added load tracking
+- session notes and per-exercise notes stored inside the mesocycle history
 - set-by-set workout logging
 - per-exercise history modal with prior weeks and logged weights
 - inline muscle feedback collection
@@ -45,6 +50,7 @@ HyperPhases supports:
 - automatic weekly volume adjustment
 - automatic week advancement after all configured split days are logged
 - archived mesocycle folder for previous blocks
+- archived block reuse so a completed phase can seed the next setup
 - homepage progression analytics and goal bars
 - preset split library with editable day names and muscle assignments before the mesocycle starts
 - a dedicated support checkout page with embedded Stripe Checkout
