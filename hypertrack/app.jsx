@@ -365,7 +365,7 @@ function calcVolumeForWeek(week, totalWeeks) {
 function getAvailableExercises(muscle, equipment) {
   const seen = new Set();
   const list = [];
-  equipment.forEach((item) => {
+  Array.from(new Set([...(equipment || []), "Bodyweight only"])).forEach((item) => {
     (EQUIPMENT_EXERCISES[muscle]?.[item] || []).forEach((exercise) => {
       if (!seen.has(exercise)) {
         seen.add(exercise);
@@ -459,39 +459,100 @@ function withUpdatedAt(meso) {
   };
 }
 
-async function fetchRemoteMeso(client, userId) {
+function buildMesoName(meso) {
+  return (
+    meso?.name ||
+    meso?.splitName ||
+    meso?.split?.name ||
+    "Untitled Mesocycle"
+  );
+}
+
+function hydrateRemoteMeso(row) {
+  if (!row?.meso_json) return null;
+  const payload = row.meso_json;
+  return {
+    ...payload,
+    remoteId: row.id,
+    status: row.status || payload.status || "active",
+    name: row.name || payload.name || buildMesoName(payload),
+    startedAt: row.started_at || payload.startedAt || payload.started || null,
+    completedAt: row.completed_at || payload.completedAt || null,
+    updatedAt: row.updated_at || payload.updatedAt || payload.started || null,
+  };
+}
+
+function buildRemoteMesoRecord(userId, meso, status = "active") {
+  const payload = withUpdatedAt({
+    ...meso,
+    ownerUserId: userId,
+    status,
+    name: buildMesoName(meso),
+  });
+  return {
+    user_id: userId,
+    status,
+    name: buildMesoName(payload),
+    started_at: payload.startedAt || payload.started || payload.updatedAt,
+    completed_at:
+      status === "archived" ? payload.completedAt || payload.archivedAt || payload.updatedAt : null,
+    updated_at: payload.updatedAt,
+    meso_json: payload,
+  };
+}
+
+async function fetchRemoteMeso(client, userId, status = "active") {
   const { data, error } = await client
     .from(SUPABASE_TABLE)
-    .select("meso_json, updated_at")
+    .select("id, status, name, started_at, completed_at, updated_at, meso_json")
     .eq("user_id", userId)
+    .eq("status", status)
     .maybeSingle();
   if (error) throw error;
-  return data || null;
+  return hydrateRemoteMeso(data);
 }
 
-async function pushRemoteMeso(client, userId, meso) {
-  const payload = withUpdatedAt(meso);
-  const { error } = await client.from(SUPABASE_TABLE).upsert(
-    {
-      user_id: userId,
-      meso_json: payload,
-      updated_at: payload.updatedAt,
-    },
-    { onConflict: "user_id" }
-  );
+async function fetchArchivedMesos(client, userId) {
+  const { data, error } = await client
+    .from(SUPABASE_TABLE)
+    .select("id, status, name, started_at, completed_at, updated_at, meso_json")
+    .eq("user_id", userId)
+    .eq("status", "archived")
+    .order("updated_at", { ascending: false });
   if (error) throw error;
-  return payload;
+  return (data || []).map(hydrateRemoteMeso).filter(Boolean);
 }
 
-function pickNewestMeso(localMeso, remoteRow) {
-  const remoteMeso = remoteRow?.meso_json || null;
-  if (!localMeso) return remoteMeso;
-  if (!remoteMeso) return localMeso;
-  const localTime = new Date(localMeso.updatedAt || localMeso.started || 0).getTime();
-  const remoteTime = new Date(
-    remoteMeso.updatedAt || remoteRow.updated_at || remoteMeso.started || 0
-  ).getTime();
-  return remoteTime > localTime ? remoteMeso : localMeso;
+async function pushRemoteMeso(client, userId, meso, status = "active") {
+  const record = buildRemoteMesoRecord(userId, meso, status);
+  let query = client.from(SUPABASE_TABLE);
+  let data;
+  let error;
+  if (meso?.remoteId) {
+    ({ data, error } = await query
+      .update(record)
+      .eq("id", meso.remoteId)
+      .eq("user_id", userId)
+      .select("id, status, name, started_at, completed_at, updated_at, meso_json")
+      .single());
+  } else {
+    ({ data, error } = await query
+      .insert(record)
+      .select("id, status, name, started_at, completed_at, updated_at, meso_json")
+      .single());
+  }
+  if (error) throw error;
+  return hydrateRemoteMeso(data);
+}
+
+async function archiveRemoteMeso(client, userId, meso) {
+  if (!meso?.remoteId) return null;
+  return pushRemoteMeso(client, userId, {
+    ...meso,
+    archivedAt: new Date().toISOString(),
+    completedAt:
+      meso.completedAt || (meso.week > meso.totalWeeks ? new Date().toISOString() : null),
+  }, "archived");
 }
 
 function getLastPerformance(sessions, muscle, exerciseName) {
@@ -582,8 +643,10 @@ function buildSessionState(meso, daySlotId) {
   if (!daySlot) return null;
   const muscles = daySlot.muscles;
   const log = {};
+  const targetRIR = targetRIRForWeek(meso.week);
   muscles.forEach((muscle) => {
     const selected = meso.exercises[muscle] || [];
+    if (!selected.length) return;
     const setsPerExercise = Math.max(2, Math.round((meso.weeklyVolume[muscle] || MEV_MRV[muscle][0]) / Math.max(1, selected.length)));
     log[muscle] = selected.map((exercise) => {
       const increment = meso.increments[exercise] || DEFAULT_INCREMENT;
@@ -602,12 +665,13 @@ function buildSessionState(meso, daySlotId) {
           id: Date.now() + Math.random() + idx,
           weight: idx === 0 ? suggestedWeight : "",
           reps: previous?.reps || 10,
-          rir: "",
+          rir: targetRIR,
           done: false,
         })),
       };
     });
   });
+  if (!Object.keys(log).length) return null;
   return {
     daySlotId: daySlot.id,
     dayLabel: daySlot.label,
@@ -685,30 +749,110 @@ function normalizeExercisesAndIncrements(exercises, increments) {
   return { normalizedExercises, normalizedIncrements };
 }
 
+function getCompletedSetRowsForExercise(sessions, muscle, exerciseName) {
+  const rows = [];
+  (sessions || []).forEach((session) => {
+    const blocks = session?.log?.[muscle] || [];
+    blocks.forEach((block) => {
+      if (block.exercise !== exerciseName) return;
+      const completedSets = (block.sets || []).filter(
+        (set) => set.done && set.weight !== "" && !Number.isNaN(Number(set.weight))
+      );
+      if (!completedSets.length) return;
+      rows.push({
+        week: session.week,
+        date: session.date,
+        synthetic: Boolean(session.synthetic),
+        sets: completedSets.map((set) => ({
+          weight: Number(set.weight),
+          reps: Number(set.reps) || 0,
+          rir: set.rir === "" ? "" : Number(set.rir),
+        })),
+      });
+    });
+  });
+  return rows;
+}
+
+function getExerciseHistoryRows(sessions, muscle, exerciseName) {
+  return getCompletedSetRowsForExercise(sessions, muscle, exerciseName).sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+}
+
+function getExerciseTrendRows(meso, options = {}) {
+  const includeSynthetic = options.includeSynthetic === true;
+  const trends = [];
+  const seen = new Set();
+  (meso?.sessions || []).forEach((session) => {
+    if (!includeSynthetic && session.synthetic) return;
+    Object.entries(session.log || {}).forEach(([muscle, blocks]) => {
+      (blocks || []).forEach((block) => {
+        const key = `${muscle}::${block.exercise}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        const history = getCompletedSetRowsForExercise(
+          meso.sessions.filter((item) => includeSynthetic || !item.synthetic),
+          muscle,
+          block.exercise
+        );
+        if (history.length < 1) return;
+        const chronological = [...history].sort(
+          (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+        );
+        const first = chronological[0]?.sets?.[0];
+        const latest = chronological[chronological.length - 1]?.sets?.[chronological[chronological.length - 1].sets.length - 1];
+        if (!first || !latest) return;
+        trends.push({
+          key,
+          muscle,
+          exercise: block.exercise,
+          firstWeight: first.weight,
+          latestWeight: latest.weight,
+          delta: latest.weight - first.weight,
+          entries: chronological.length,
+        });
+      });
+    });
+  });
+  return trends.sort((a, b) => b.delta - a.delta);
+}
+
+function getMesoSummaryStats(meso) {
+  const daySlots = getMesoDaySlots(meso);
+  const doneThisWeek = getWeekDoneDaySlotIds(meso, Math.min(meso.week, meso.totalWeeks)).length;
+  const totalDays = daySlots.length || 1;
+  const trends = getExerciseTrendRows(meso);
+  const upward = trends.filter((item) => item.delta > 0);
+  return {
+    completionPct: clamp((doneThisWeek / totalDays) * 100, 0, 100),
+    mesoPct: clamp((((Math.min(meso.week, meso.totalWeeks) - 1) + doneThisWeek / totalDays) / Math.max(1, meso.totalWeeks)) * 100, 0, 100),
+    daysLeft: Math.max(0, totalDays - doneThisWeek),
+    upwardCount: upward.length,
+    topMovers: trends.slice(0, 3),
+    strongest: upward[0] || trends[0] || null,
+  };
+}
+
 function App() {
   const [screen, setScreen] = useState("loading");
   const [meso, setMeso] = useState(null);
+  const [archivedMesos, setArchivedMesos] = useState([]);
   const [toast, setToast] = useState(null);
   const [sessionState, setSessionState] = useState(null);
   const [swapTarget, setSwapTarget] = useState(null);
   const [incrementTarget, setIncrementTarget] = useState(null);
+  const [historyTarget, setHistoryTarget] = useState(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveDetail, setArchiveDetail] = useState(null);
+  const [manageExercisesOpen, setManageExercisesOpen] = useState(false);
   const [cloudConfig, setCloudConfig] = useState(() => loadSupabaseConfig());
   const [supabaseClient, setSupabaseClient] = useState(null);
   const [cloudUser, setCloudUser] = useState(null);
-  const [cloudStatus, setCloudStatus] = useState("Sign in to sync across devices.");
+  const [authReady, setAuthReady] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState("Sign in to use HyperPhases.");
   const [cloudBusy, setCloudBusy] = useState(false);
-
-  useEffect(() => {
-    storage.get().then((saved) => {
-      if (saved) {
-        setMeso(saved);
-        setScreen("home");
-      } else {
-        setScreen("welcome");
-      }
-    });
-  }, []);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -717,20 +861,17 @@ function App() {
   }, [toast]);
 
   useEffect(() => {
-    if (meso && (screen === "welcome" || screen === "loading")) {
-      setScreen("home");
-    }
-  }, [meso, screen]);
-
-  useEffect(() => {
+    setAuthReady(false);
     const client = createSupabaseClient(cloudConfig);
     setSupabaseClient(client);
     if (!client) {
       setCloudUser(null);
+      setAuthReady(true);
+      setScreen("auth");
       setCloudStatus(
         cloudConfig.url || cloudConfig.anonKey
           ? "Connection details are incomplete."
-          : "Sign in to sync across devices."
+          : "Connect Supabase to sign in and use HyperPhases."
       );
       return undefined;
     }
@@ -740,12 +881,14 @@ function App() {
       if (error) {
         console.error(error);
         setCloudStatus("Account services are unavailable right now.");
+        setAuthReady(true);
         return;
       }
       setCloudUser(data.user || null);
       setCloudStatus(
-        data.user ? `Signed in as ${data.user.email}` : "Sign in to sync across devices."
+        data.user ? `Signed in as ${data.user.email}` : "Sign in to use HyperPhases."
       );
+      setAuthReady(true);
     });
     const {
       data: { subscription },
@@ -754,8 +897,9 @@ function App() {
       setCloudStatus(
         session?.user
           ? `Signed in as ${session.user.email}`
-          : "Sign in to sync across devices."
+          : "Sign in to use HyperPhases."
       );
+      setAuthReady(true);
     });
     return () => {
       active = false;
@@ -763,73 +907,95 @@ function App() {
     };
   }, [cloudConfig]);
 
-  const persistMeso = useCallback(
-    async (nextMeso, options = {}) => {
-      let payload = withUpdatedAt(nextMeso);
-      setMeso(payload);
-      await storage.set(payload);
-      if (options.skipRemote) {
-        return payload;
-      }
-      if (supabaseClient && cloudUser) {
-        try {
-          setCloudBusy(true);
-          payload = await pushRemoteMeso(supabaseClient, cloudUser.id, {
-            ...payload,
-            ownerUserId: cloudUser.id,
-          });
-          setMeso(payload);
-          await storage.set(payload);
-          setCloudStatus(`Last synced ${new Date(payload.updatedAt).toLocaleString()}`);
-        } catch (error) {
-          console.error(error);
-          setCloudStatus("Sync failed. Your local save is still safe.");
-        } finally {
-          setCloudBusy(false);
-        }
-      }
-      return payload;
-    },
-    [cloudUser, supabaseClient]
-  );
-
-  const syncFromCloud = useCallback(async () => {
+  const loadUserMesos = useCallback(async () => {
     if (!supabaseClient || !cloudUser) return;
     try {
       setCloudBusy(true);
-      const remoteRow = await fetchRemoteMeso(supabaseClient, cloudUser.id);
-      const localMeso = await storage.get();
-      const compatibleLocal =
-        localMeso && localMeso.ownerUserId && localMeso.ownerUserId !== cloudUser.id
-          ? null
-          : localMeso;
-      const chosen = pickNewestMeso(compatibleLocal, remoteRow);
-      if (chosen) {
-        const owned = { ...chosen, ownerUserId: cloudUser.id };
-        setMeso(owned);
-        await storage.set(owned);
-        if (!remoteRow || chosen === compatibleLocal) {
-          await pushRemoteMeso(supabaseClient, cloudUser.id, owned);
-        }
-      } else {
-        setMeso(null);
-        setScreen("welcome");
-      }
+      const [activeMeso, archived] = await Promise.all([
+        fetchRemoteMeso(supabaseClient, cloudUser.id, "active"),
+        fetchArchivedMesos(supabaseClient, cloudUser.id),
+      ]);
+      setMeso(activeMeso);
+      setArchivedMesos(archived);
       setCloudStatus(
-        remoteRow ? "Cloud progress refreshed." : "No synced mesocycle found for this account yet."
+        activeMeso
+          ? `Signed in as ${cloudUser.email}`
+          : `Signed in as ${cloudUser.email}. Start your first mesocycle.`
       );
+      setScreen((current) => {
+        if (current === "setup" || current === "session") return current;
+        return activeMeso ? "home" : "welcome";
+      });
     } catch (error) {
       console.error(error);
-      setCloudStatus("Sync failed.");
+      setCloudStatus("Cloud load failed.");
+      setScreen("auth");
     } finally {
       setCloudBusy(false);
     }
   }, [cloudUser, supabaseClient]);
 
   useEffect(() => {
-    if (!supabaseClient || !cloudUser) return;
-    syncFromCloud();
-  }, [cloudUser, supabaseClient, syncFromCloud]);
+    if (!authReady) return;
+    if (!cloudUser) {
+      setMeso(null);
+      setArchivedMesos([]);
+      setSessionState(null);
+      setScreen("auth");
+      return;
+    }
+    loadUserMesos();
+  }, [authReady, cloudUser, loadUserMesos]);
+
+  const persistMeso = useCallback(
+    async (nextMeso, status = "active") => {
+      if (!supabaseClient || !cloudUser) return nextMeso;
+      try {
+        setCloudBusy(true);
+        const payload = await pushRemoteMeso(supabaseClient, cloudUser.id, nextMeso, status);
+        if (status === "active") {
+          setMeso(payload);
+        }
+        setCloudStatus(`Cloud updated ${new Date(payload.updatedAt).toLocaleString()}`);
+        return payload;
+      } catch (error) {
+        console.error(error);
+        setCloudStatus("Cloud save failed.");
+        throw error;
+      } finally {
+        setCloudBusy(false);
+      }
+    },
+    [cloudUser, supabaseClient]
+  );
+
+  const createNewActiveMeso = useCallback(
+    async (nextMeso) => {
+      let archivedCopy = null;
+      if (meso?.remoteId && meso.status !== "archived") {
+        archivedCopy = await archiveRemoteMeso(supabaseClient, cloudUser.id, {
+          ...meso,
+          archivedAt: new Date().toISOString(),
+          completedAt:
+            meso.completedAt || (meso.week > meso.totalWeeks ? new Date().toISOString() : null),
+        });
+      }
+      const created = await persistMeso(
+        {
+          ...nextMeso,
+          remoteId: null,
+          ownerUserId: cloudUser.id,
+          status: "active",
+        },
+        "active"
+      );
+      if (archivedCopy) {
+        setArchivedMesos((current) => [archivedCopy, ...current.filter((item) => item.remoteId !== archivedCopy.remoteId)]);
+      }
+      return created;
+    },
+    [cloudUser, meso, persistMeso, supabaseClient]
+  );
 
   const handleSaveCloudConfig = useCallback((config) => {
     saveSupabaseConfig(config);
@@ -908,8 +1074,12 @@ function App() {
       setCloudBusy(true);
       const { error } = await supabaseClient.auth.signOut();
       if (error) throw error;
+      setSessionState(null);
+      setMeso(null);
+      setArchivedMesos([]);
       setCloudUser(null);
-      setCloudStatus("Signed out. Local progress is still available on this device.");
+      setCloudStatus("Signed out.");
+      setScreen("auth");
     } catch (error) {
       console.error(error);
       setCloudStatus("Sign-out failed");
@@ -918,26 +1088,19 @@ function App() {
     }
   }, [supabaseClient]);
 
-  const handlePushCloud = useCallback(async () => {
-    if (!meso) return;
-    await persistMeso(meso);
-  }, [meso, persistMeso]);
-
   const handleNewMeso = useCallback(async () => {
-    const confirmed = window.confirm("Start a new mesocycle and clear the current one?");
+    const confirmed = window.confirm("Start building a new mesocycle? Your current block will move to the archive when you save the new one.");
     if (!confirmed) return;
     setSessionState(null);
-    setMeso(null);
-    await storage.clear();
     setScreen("setup");
   }, []);
 
   const startSession = useCallback(
-    (dayType) => {
+    (daySlotId) => {
       if (!meso) return;
       const done = getWeekDoneDaySlotIds(meso, meso.week);
-      if (done.includes(dayType)) return;
-      const nextState = buildSessionState(meso, dayType);
+      if (done.includes(daySlotId)) return;
+      const nextState = buildSessionState(meso, daySlotId);
       if (!nextState) return;
       setSessionState(nextState);
       setScreen("session");
@@ -962,6 +1125,9 @@ function App() {
       weeklyVolume: applyVolumeProgression(meso, sessionState),
     };
     nextMeso = advanceWeekIfNeeded(nextMeso);
+    if (nextMeso.week > nextMeso.totalWeeks && !nextMeso.completedAt) {
+      nextMeso = { ...nextMeso, completedAt: new Date().toISOString() };
+    }
     await persistMeso(nextMeso);
     setSessionState(null);
     setScreen("home");
@@ -1042,9 +1208,36 @@ function App() {
     [meso, persistMeso, sessionState]
   );
 
+  const handleRemoveExercise = useCallback(
+    async (muscle, exerciseName) => {
+      if (!meso) return;
+      const nextMeso = {
+        ...meso,
+        exercises: {
+          ...meso.exercises,
+          [muscle]: (meso.exercises[muscle] || []).filter((item) => item !== exerciseName),
+        },
+      };
+      await persistMeso(nextMeso);
+      setToast("Exercise removed from future sessions");
+    },
+    [meso, persistMeso]
+  );
+
   return (
     <div className="app-shell">
       {screen === "loading" && <LoadingScreen />}
+      {screen === "auth" && (
+        <AuthScreen
+          initialConfig={cloudConfig}
+          cloudUser={cloudUser}
+          cloudStatus={cloudStatus}
+          cloudBusy={cloudBusy}
+          onSaveCloudConfig={handleSaveCloudConfig}
+          onSignUp={handleSignUp}
+          onSignIn={handleSignIn}
+        />
+      )}
       {screen === "welcome" && (
         <WelcomeScreen
           onStart={() => setScreen("setup")}
@@ -1056,7 +1249,7 @@ function App() {
       {screen === "setup" && (
         <SetupScreen
           onComplete={async (nextMeso, message) => {
-            await persistMeso(nextMeso);
+            await createNewActiveMeso(nextMeso);
             setToast(message);
             setScreen("home");
           }}
@@ -1066,10 +1259,13 @@ function App() {
       {screen === "home" && meso && (
         <HomeScreen
           meso={meso}
+          archivedMesos={archivedMesos}
           onNewMeso={handleNewMeso}
           onStartSession={startSession}
           onGoHome={() => setScreen("home")}
           onOpenAccount={() => setAccountOpen(true)}
+          onOpenArchive={() => setArchiveOpen(true)}
+          onManageExercises={() => setManageExercisesOpen(true)}
         />
       )}
       {screen === "session" && meso && sessionState && (
@@ -1086,6 +1282,7 @@ function App() {
           onEditIncrement={(muscle, exIdx, currentInc, exerciseName) =>
             setIncrementTarget({ muscle, exIdx, currentInc, exerciseName })
           }
+          onOpenHistory={(muscle, exerciseName) => setHistoryTarget({ muscle, exerciseName })}
         />
       )}
       {swapTarget && meso && sessionState && (
@@ -1113,6 +1310,37 @@ function App() {
           }
         />
       )}
+      {historyTarget && meso && (
+        <ExerciseHistoryModal
+          meso={meso}
+          muscle={historyTarget.muscle}
+          exerciseName={historyTarget.exerciseName}
+          onClose={() => setHistoryTarget(null)}
+        />
+      )}
+      {manageExercisesOpen && meso && (
+        <ManageExercisesSheet
+          meso={meso}
+          onClose={() => setManageExercisesOpen(false)}
+          onRemove={handleRemoveExercise}
+        />
+      )}
+      {archiveOpen && (
+        <ArchiveSheet
+          mesos={archivedMesos}
+          onClose={() => setArchiveOpen(false)}
+          onOpenDetail={(item) => {
+            setArchiveDetail(item);
+            setArchiveOpen(false);
+          }}
+        />
+      )}
+      {archiveDetail && (
+        <ArchivedMesoDetailSheet
+          meso={archiveDetail}
+          onClose={() => setArchiveDetail(null)}
+        />
+      )}
       {accountOpen && (
         <AccountSheet
           hasMeso={Boolean(meso)}
@@ -1120,13 +1348,17 @@ function App() {
           cloudUser={cloudUser}
           cloudStatus={cloudStatus}
           cloudBusy={cloudBusy}
+          archivedCount={archivedMesos.length}
           onClose={() => setAccountOpen(false)}
           onSaveCloudConfig={handleSaveCloudConfig}
           onSignUp={handleSignUp}
           onSignIn={handleSignIn}
           onSignOut={handleSignOut}
-          onPullCloud={syncFromCloud}
-          onPushCloud={handlePushCloud}
+          onRefresh={loadUserMesos}
+          onOpenArchive={() => {
+            setAccountOpen(false);
+            setArchiveOpen(true);
+          }}
         />
       )}
       {toast && <div className="toast">{toast}</div>}
@@ -2010,16 +2242,21 @@ function SetupScreen({ onComplete, onCancel }) {
 
 function HomeScreen({
   meso,
+  archivedMesos,
   onNewMeso,
   onStartSession,
   onGoHome,
   onOpenAccount,
+  onOpenArchive,
+  onManageExercises,
 }) {
   const daySlots = getMesoDaySlots(meso);
   const activeMuscles = getActiveMusclesFromSlots(daySlots);
   const doneDayTypes = getWeekDoneDaySlotIds(meso, meso.week);
   const progress = meso.totalWeeks > 0 ? clamp(((meso.week - 1) / meso.totalWeeks) * 100, 0, 100) : 0;
   const complete = meso.week > meso.totalWeeks;
+  const summary = getMesoSummaryStats(meso);
+  const unitLabel = getUnitLabel(meso?.unit);
   return (
     <div className="stack">
       <div className="sticky">
@@ -2036,6 +2273,9 @@ function HomeScreen({
               </div>
             </div>
             <div className="row">
+              <button className="btn-ghost" onClick={onOpenArchive}>
+                Archive
+              </button>
               <button className="btn-ghost" onClick={onOpenAccount}>
                 Account
               </button>
@@ -2088,10 +2328,66 @@ function HomeScreen({
             </div>
           </div>
 
-          <div className="card stack" style={{ gap: 8 }}>
-            <div className="eyebrow">What Is A Mesocycle?</div>
-            <div className="small">
-              A mesocycle is a focused block of training, usually 4 to 8 weeks, where you keep the structure stable and progress load, effort, and volume across the block before resetting.
+          <div className="grid-2">
+            <div className="card stack analytics-card">
+              <div className="eyebrow">Why RIR Works</div>
+              <div className="small">
+                RIR keeps progression tied to real effort so you can push load upward without turning every session into failure-based fatigue.
+              </div>
+              <div className="tiny muted">
+                A mesocycle is a focused 4 to 8 week block where you keep the structure stable and progress load, effort, and volume across the phase.
+              </div>
+              <div className="goal-track">
+                <div className="goal-fill" style={{ width: `${summary.mesoPct}%` }} />
+              </div>
+              <div className="mono tiny" style={{ color: "var(--ok)" }}>
+                Week target set to {targetRIRForWeek(meso.week)} RIR across new sets
+              </div>
+            </div>
+            <div className="card stack analytics-card">
+              <div className="eyebrow">Progress Snapshot</div>
+              <div className="display" style={{ fontSize: 40, lineHeight: 0.88 }}>
+                {summary.upwardCount}
+              </div>
+              <div className="small muted">exercises trending upward this mesocycle</div>
+              <div className="tiny muted">
+                {summary.strongest
+                  ? `${summary.strongest.exercise} is up ${formatKg(summary.strongest.delta)} ${unitLabel}`
+                  : "Complete sessions to unlock strength trend highlights."}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid-3">
+            <div className="card stack analytics-card">
+              <div className="eyebrow">This Week</div>
+              <div className="display" style={{ fontSize: 42, lineHeight: 0.88 }}>
+                {doneDayTypes.length}/{daySlots.length}
+              </div>
+              <div className="goal-track">
+                <div className="goal-fill" style={{ width: `${summary.completionPct}%` }} />
+              </div>
+              <div className="tiny muted">{summary.daysLeft} sessions left this week</div>
+            </div>
+            <div className="card stack analytics-card">
+              <div className="eyebrow">Meso Progress</div>
+              <div className="display" style={{ fontSize: 42, lineHeight: 0.88 }}>
+                {Math.round(summary.mesoPct)}%
+              </div>
+              <div className="goal-track">
+                <div className="goal-fill" style={{ width: `${summary.mesoPct}%` }} />
+              </div>
+              <div className="tiny muted">goal completion across the current block</div>
+            </div>
+            <div className="card stack analytics-card">
+              <div className="eyebrow">Archive</div>
+              <div className="display" style={{ fontSize: 42, lineHeight: 0.88 }}>
+                {archivedMesos.length}
+              </div>
+              <div className="tiny muted">previous mesocycles saved to your account</div>
+              <button className="btn-ghost" onClick={onOpenArchive}>
+                View Previous
+              </button>
             </div>
           </div>
 
@@ -2099,24 +2395,59 @@ function HomeScreen({
             {daySlots.map((daySlot) => {
               const muscles = daySlot.muscles;
               const done = doneDayTypes.includes(daySlot.id);
+              const hasExercises = muscles.some((muscle) => (meso.exercises[muscle] || []).length > 0);
               return (
                 <div
                   key={daySlot.id}
-                  className={`card day-tile ${done ? "done" : ""}`}
-                  onClick={() => !done && onStartSession(daySlot.id)}
+                  className={`card day-tile ${done || !hasExercises ? "done" : ""}`}
+                  onClick={() => !done && hasExercises && onStartSession(daySlot.id)}
                 >
                   <div className="space-between" style={{ alignItems: "flex-start" }}>
                     <div className="display" style={{ fontSize: 34 }}>
                       {daySlot.label}
                     </div>
-                    {done && <div className="badge">✓</div>}
+                    {done ? <div className="badge">✓</div> : !hasExercises ? <div className="badge">-</div> : null}
                   </div>
                   <div className="mono tiny muted" style={{ marginTop: 8 }}>
-                    {muscles.join(" · ")}
+                    {hasExercises ? muscles.join(" · ") : "No exercises configured"}
                   </div>
                 </div>
               );
             })}
+          </div>
+
+          <div className="card stack">
+            <div className="title-row">
+              <div>
+                <div className="display" style={{ fontSize: 38 }}>
+                  Strength Trends
+                </div>
+                <div className="mono tiny muted">first logged weight vs latest logged weight</div>
+              </div>
+              <button className="btn-ghost" onClick={onManageExercises}>
+                Manage Exercises
+              </button>
+            </div>
+            {(summary.topMovers || []).length ? (
+              summary.topMovers.map((item) => (
+                <div key={item.key} className="volume-row">
+                  <div className="label tiny">{item.exercise}</div>
+                  <div className="volume-track">
+                    <div
+                      className="volume-fill"
+                      style={{ width: `${clamp((Math.max(item.delta, 0) / Math.max(summary.topMovers[0]?.delta || 1, 1)) * 100, 8, 100)}%` }}
+                    />
+                  </div>
+                  <div className="mono tiny gold" style={{ textAlign: "right" }}>
+                    {item.delta > 0 ? "+" : ""}{formatKg(item.delta)} {unitLabel}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="small muted">
+                Progress cards will populate after you log completed sets across multiple sessions.
+              </div>
+            )}
           </div>
 
           <div className="card stack">
@@ -2155,13 +2486,14 @@ function AccountSheet({
   cloudUser,
   cloudStatus,
   cloudBusy,
+  archivedCount,
   onClose,
   onSaveCloudConfig,
   onSignUp,
   onSignIn,
   onSignOut,
-  onPullCloud,
-  onPushCloud,
+  onRefresh,
+  onOpenArchive,
 }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -2189,10 +2521,51 @@ function AccountSheet({
           onSignUp={onSignUp}
           onSignIn={onSignIn}
           onSignOut={onSignOut}
-          onPullCloud={onPullCloud}
-          onPushCloud={onPushCloud}
+          onRefresh={onRefresh}
+          onOpenArchive={onOpenArchive}
+          archivedCount={archivedCount}
         />
       </div>
+    </div>
+  );
+}
+
+function AuthScreen({
+  initialConfig,
+  cloudUser,
+  cloudStatus,
+  cloudBusy,
+  onSaveCloudConfig,
+  onSignUp,
+  onSignIn,
+}) {
+  return (
+    <div className="centered stack" style={{ gap: 18 }}>
+      <div className="card hero-card stack">
+        <div className="eyebrow">Cloud-First Training</div>
+        <div className="display" style={{ fontSize: 104, lineHeight: 0.82 }}>
+          Hyper
+          <br />
+          <span className="accent">Phases</span>
+        </div>
+        <div className="hero-subtitle">
+          Sign in to plan, log, and archive every mesocycle in one place. Your training state stays tied to your account across devices.
+        </div>
+      </div>
+      <CloudSyncCard
+        hasMeso={false}
+        initialConfig={initialConfig}
+        cloudUser={cloudUser}
+        cloudStatus={cloudStatus}
+        cloudBusy={cloudBusy}
+        onSaveCloudConfig={onSaveCloudConfig}
+        onSignUp={onSignUp}
+        onSignIn={onSignIn}
+        onSignOut={() => {}}
+        onRefresh={() => {}}
+        onOpenArchive={() => {}}
+        archivedCount={0}
+      />
     </div>
   );
 }
@@ -2207,18 +2580,19 @@ function CloudSyncCard({
   onSignUp,
   onSignIn,
   onSignOut,
-  onPullCloud,
-  onPushCloud,
+  onRefresh,
+  onOpenArchive,
+  archivedCount,
 }) {
   const hasHostedConfig = Boolean(initialConfig?.url && initialConfig?.anonKey);
   const [url, setUrl] = useState(initialConfig?.url || "");
   const [anonKey, setAnonKey] = useState(initialConfig?.anonKey || "");
   const [email, setEmail] = useState(cloudUser?.email || "");
   const [password, setPassword] = useState("");
-  const accountTitle = cloudUser ? "Your progress is connected" : "Sign in to keep progress in sync";
+  const accountTitle = cloudUser ? "Your training is connected" : "Sign in to start tracking";
   const accountSummary = cloudUser
-    ? "Your mesocycle can sync across devices while still saving locally on this browser."
-    : "Sign in to back up your mesocycle and keep progress consistent across devices.";
+    ? "Your active mesocycle and archive live in your account, so your state stays consistent across devices."
+    : "Sign in before planning or logging so HyperPhases always opens to the right account state.";
   const statusTone = /failed/i.test(cloudStatus) ? "accent" : cloudUser ? "gold" : "muted";
 
   useEffect(() => {
@@ -2234,7 +2608,7 @@ function CloudSyncCard({
 
   return (
     <div className="card stack">
-      <div className="eyebrow">Sync</div>
+      <div className="eyebrow">Account</div>
       <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
         {accountTitle}
       </div>
@@ -2296,11 +2670,11 @@ function CloudSyncCard({
       )}
       {cloudUser && (
         <div className="grid-3">
-          <button className="btn-ghost" onClick={onPullCloud}>
-            Refresh Sync
+          <button className="btn-ghost" onClick={onRefresh}>
+            Refresh
           </button>
-          <button className="btn-ghost" onClick={onPushCloud} disabled={!hasMeso}>
-            Save to Cloud
+          <button className="btn-ghost" onClick={onOpenArchive}>
+            Archive
           </button>
           <button className="btn-ghost" onClick={onSignOut}>
             Sign Out
@@ -2308,7 +2682,9 @@ function CloudSyncCard({
         </div>
       )}
       <div className="tiny muted">
-        Local storage always stays active. Cloud sync is an additional backup and continuity layer.
+        {cloudUser
+          ? `${archivedCount || 0} archived mesocycles saved. Workout data is stored in Supabase, not in browser local storage.`
+          : "Once signed in, HyperPhases keeps workout data in Supabase so your training state follows your account."}
       </div>
     </div>
   );
@@ -2322,12 +2698,14 @@ function SessionScreen({
   onSave,
   onSwap,
   onEditIncrement,
+  onOpenHistory,
 }) {
   const muscles = Object.keys(sessionState.log || {});
   const allDone = muscles.every((muscle) => isMuscleDone(sessionState, muscle));
   const allRated = muscles.every((muscle) => isMuscleRated(sessionState, muscle));
   const unitLabel = getUnitLabel(meso?.unit);
   const unitStep = getUnitStep(meso?.unit);
+  const targetRIR = targetRIRForWeek(meso.week);
 
   const updateSet = (muscle, exIdx, setIdx, field, value) => {
     setSessionState((current) => ({
@@ -2361,7 +2739,7 @@ function SessionScreen({
                     id: Date.now() + Math.random(),
                     weight: "",
                     reps: 10,
-                    rir: "",
+                    rir: targetRIR,
                     done: false,
                   },
                 ],
@@ -2412,6 +2790,16 @@ function SessionScreen({
         </div>
       </div>
 
+      <div className="card stack analytics-card" style={{ gap: 8 }}>
+        <div className="eyebrow">Why RIR Is Effective</div>
+        <div className="small">
+          Target RIR keeps load progression anchored to repeatable effort. It helps you push the block forward while controlling fatigue session to session.
+        </div>
+        <div className="mono tiny" style={{ color: "var(--ok)" }}>
+          New sets default to {targetRIR} RIR for week {meso.week}.
+        </div>
+      </div>
+
       {muscles.map((muscle) => {
         const rated = isMuscleRated(sessionState, muscle);
         const done = isMuscleDone(sessionState, muscle);
@@ -2435,6 +2823,9 @@ function SessionScreen({
                       onClick={() => onEditIncrement(muscle, exIdx, block.increment, block.exercise)}
                     >
                       ±{formatKg(block.increment)}{unitLabel}
+                    </button>
+                    <button className="btn-ghost" onClick={() => onOpenHistory(muscle, block.exercise)}>
+                      history
                     </button>
                     <button className="btn-ghost" onClick={() => onSwap(muscle, exIdx)}>
                       swap
@@ -2679,6 +3070,212 @@ function IncrementModal({ current, exerciseName, unit, onClose, onSave }) {
         <button className="btn-primary" onClick={() => valid && onSave(Number(value))} disabled={!valid}>
           Save Increment
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ManageExercisesSheet({ meso, onClose, onRemove }) {
+  const activeMuscles = getActiveMusclesFromSlots(getMesoDaySlots(meso));
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="sheet stack" onClick={(event) => event.stopPropagation()}>
+        <div className="title-row">
+          <div>
+            <div className="eyebrow">Exercises</div>
+            <div className="display" style={{ fontSize: 44, lineHeight: 0.94 }}>
+              Manage Plan
+            </div>
+          </div>
+          <button className="btn-ghost" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="small muted">
+          Remove movements from future planning while preserving the history you already logged.
+        </div>
+        {activeMuscles.map((muscle) => (
+          <div key={muscle} className="card stack">
+            <div className="title-row">
+              <div className="display" style={{ fontSize: 28 }}>{muscle}</div>
+              <div className="mono tiny gold">{(meso.exercises[muscle] || []).length} active</div>
+            </div>
+            {(meso.exercises[muscle] || []).length ? (
+              (meso.exercises[muscle] || []).map((exercise) => (
+                <div key={`${muscle}-${exercise}`} className="title-row">
+                  <div className="small">{exercise}</div>
+                  <button className="btn-ghost" onClick={() => onRemove(muscle, exercise)}>
+                    Remove
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="tiny muted">No active exercises left for this muscle.</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ArchiveSheet({ mesos, onClose, onOpenDetail }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="sheet stack" onClick={(event) => event.stopPropagation()}>
+        <div className="title-row">
+          <div>
+            <div className="eyebrow">Archive</div>
+            <div className="display" style={{ fontSize: 44, lineHeight: 0.94 }}>
+              Previous Mesocycles
+            </div>
+          </div>
+          <button className="btn-ghost" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        {mesos.length ? (
+          mesos.map((item) => (
+            <button
+              key={item.remoteId || item.updatedAt}
+              className="card stack"
+              onClick={() => onOpenDetail(item)}
+              style={{ textAlign: "left" }}
+            >
+              <div className="title-row">
+                <div>
+                  <div className="display" style={{ fontSize: 30 }}>
+                    {item.name || item.splitName || item.split?.name || "Archived Meso"}
+                  </div>
+                  <div className="tiny muted">
+                    {new Date(item.startedAt || item.started).toLocaleDateString()} · {item.totalWeeks} weeks
+                  </div>
+                </div>
+                <div className="badge">{item.completedAt ? "Done" : "Archived"}</div>
+              </div>
+              <div className="small muted">
+                {(item.sessions || []).filter((session) => !session.synthetic).length} logged sessions
+              </div>
+            </button>
+          ))
+        ) : (
+          <div className="card small muted">No previous mesocycles saved yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ArchivedMesoDetailSheet({ meso, onClose }) {
+  const summary = getMesoSummaryStats(meso);
+  const unitLabel = getUnitLabel(meso?.unit);
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="sheet stack" onClick={(event) => event.stopPropagation()}>
+        <div className="title-row">
+          <div>
+            <div className="eyebrow">Archived Block</div>
+            <div className="display" style={{ fontSize: 44, lineHeight: 0.94 }}>
+              {meso.name || meso.splitName || meso.split?.name || "Archived Meso"}
+            </div>
+          </div>
+          <button className="btn-ghost" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="grid-2">
+          <div className="card stack analytics-card">
+            <div className="eyebrow">Timeline</div>
+            <div className="small">
+              {new Date(meso.startedAt || meso.started).toLocaleDateString()} to{" "}
+              {new Date(meso.completedAt || meso.updatedAt).toLocaleDateString()}
+            </div>
+          </div>
+          <div className="card stack analytics-card">
+            <div className="eyebrow">Sessions</div>
+            <div className="display" style={{ fontSize: 40, lineHeight: 0.88 }}>
+              {(meso.sessions || []).filter((session) => !session.synthetic).length}
+            </div>
+          </div>
+        </div>
+        <div className="card stack">
+          <div className="eyebrow">Top Movers</div>
+          {(summary.topMovers || []).length ? (
+            summary.topMovers.map((item) => (
+              <div key={item.key} className="title-row">
+                <div className="small">{item.exercise}</div>
+                <div className="mono tiny gold">
+                  {item.delta > 0 ? "+" : ""}{formatKg(item.delta)} {unitLabel}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="small muted">No weight history was logged in this block.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExerciseHistoryModal({ meso, muscle, exerciseName, onClose }) {
+  const history = getExerciseHistoryRows(meso.sessions, muscle, exerciseName);
+  const unitLabel = getUnitLabel(meso?.unit);
+  const first = history.length ? history[history.length - 1].sets[0] : null;
+  const latest = history.length ? history[0].sets[history[0].sets.length - 1] : null;
+  const delta = first && latest ? latest.weight - first.weight : null;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="sheet stack" onClick={(event) => event.stopPropagation()}>
+        <div className="title-row">
+          <div>
+            <div className="eyebrow">Exercise History</div>
+            <div className="display" style={{ fontSize: 44, lineHeight: 0.94 }}>
+              {exerciseName}
+            </div>
+          </div>
+          <button className="btn-ghost" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="card stack analytics-card">
+          <div className="eyebrow">Trend</div>
+          {delta != null ? (
+            <>
+              <div className="small">
+                {formatKg(first.weight)} {unitLabel} to {formatKg(latest.weight)} {unitLabel}
+              </div>
+              <div className="mono tiny" style={{ color: delta >= 0 ? "var(--ok)" : "var(--warn)" }}>
+                {delta >= 0 ? "+" : ""}{formatKg(delta)} {unitLabel} across this mesocycle
+              </div>
+            </>
+          ) : (
+            <div className="small muted">No completed sets logged yet for this exercise.</div>
+          )}
+        </div>
+        {history.length ? (
+          history.map((item, idx) => (
+            <div key={`${exerciseName}-${item.week}-${item.date}-${idx}`} className="card stack">
+              <div className="title-row">
+                <div>
+                  <div className="display" style={{ fontSize: 28 }}>Week {item.week}</div>
+                  <div className="tiny muted">{new Date(item.date).toLocaleDateString()}</div>
+                </div>
+                {item.synthetic && <div className="badge">Seed</div>}
+              </div>
+              {item.sets.map((set, setIdx) => (
+                <div key={`${item.date}-${setIdx}`} className="title-row">
+                  <div className="mono tiny">Set {setIdx + 1}</div>
+                  <div className="mono tiny gold">
+                    {formatKg(set.weight)} {unitLabel} · {set.reps} reps · RIR {set.rir === "" ? "-" : set.rir}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))
+        ) : (
+          <div className="card small muted">No previous completed sets found for this movement yet.</div>
+        )}
       </div>
     </div>
   );

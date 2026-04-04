@@ -23,11 +23,11 @@
         --bg2: #ffffff;
         --surface: rgba(255, 255, 255, 0.94);
         --surface2: rgba(247, 250, 255, 0.96);
-        --surface3: rgba(99, 91, 255, 0.04);
+        --surface3: rgba(15, 159, 110, 0.05);
         --border: rgba(15, 23, 42, 0.08);
         --border2: rgba(15, 23, 42, 0.12);
-        --accent: #635bff;
-        --accentlo: rgba(99, 91, 255, 0.1);
+        --accent: #0f9f6e;
+        --accentlo: rgba(15, 159, 110, 0.12);
         --gold: #0a2540;
         --goldlo: rgba(10, 37, 64, 0.06);
         --text: #0a2540;
@@ -35,6 +35,7 @@
         --muted2: #7a8ca5;
         --warn: #d97917;
         --ok: #0f9f6e;
+        --ok2: #35c98a;
         --shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
       }
 
@@ -51,7 +52,7 @@
 
       body {
         background:
-          radial-gradient(circle at top, rgba(99, 91, 255, 0.08), transparent 24%),
+          radial-gradient(circle at top, rgba(15, 159, 110, 0.1), transparent 24%),
           linear-gradient(180deg, #f9fbff 0%, #eef4fb 100%);
         color: var(--text);
         font-family: "Syne", sans-serif;
@@ -163,13 +164,13 @@
       .btn-sm {
         position: relative;
         overflow: hidden;
-        background: linear-gradient(180deg, #7a73ff, #635bff 72%, #574fe8 100%);
+        background: linear-gradient(180deg, #35c98a, #0f9f6e 72%, #0c855c 100%);
         color: white;
         border-radius: 18px;
         font-family: "Syncopate", sans-serif;
         letter-spacing: 0.14em;
         text-transform: uppercase;
-        box-shadow: 0 14px 26px rgba(99, 91, 255, 0.18);
+        box-shadow: 0 14px 26px rgba(15, 159, 110, 0.2);
       }
 
       .btn-primary::after,
@@ -196,7 +197,7 @@
       .btn-primary:hover,
       .btn-sm:hover {
         transform: translateY(-1px);
-        box-shadow: 0 18px 30px rgba(99, 91, 255, 0.22);
+        box-shadow: 0 18px 30px rgba(15, 159, 110, 0.24);
       }
 
       .btn-ghost {
@@ -212,7 +213,7 @@
       }
 
       .btn-ghost:hover {
-        border-color: rgba(99, 91, 255, 0.24);
+        border-color: rgba(15, 159, 110, 0.24);
         color: var(--text);
         background: rgba(255, 255, 255, 0.96);
       }
@@ -263,7 +264,7 @@
       }
 
       .step-dot.active {
-        background: linear-gradient(90deg, var(--accent), var(--gold));
+        background: linear-gradient(90deg, var(--accent), var(--ok2));
       }
 
       .grid-2,
@@ -322,7 +323,7 @@
         top: -64px;
         width: 170px;
         height: 170px;
-        background: radial-gradient(circle, rgba(99, 91, 255, 0.12), transparent 66%);
+        background: radial-gradient(circle, rgba(15, 159, 110, 0.14), transparent 66%);
         pointer-events: none;
       }
 
@@ -350,7 +351,7 @@
       }
 
       .support-note .eyebrow {
-        color: rgba(99, 91, 255, 0.9);
+        color: rgba(15, 159, 110, 0.95);
       }
 
       .steps-grid {
@@ -374,8 +375,8 @@
         width: 32px;
         height: 32px;
         border-radius: 999px;
-        background: rgba(99, 91, 255, 0.1);
-        border: 1px solid rgba(99, 91, 255, 0.18);
+        background: rgba(15, 159, 110, 0.1);
+        border: 1px solid rgba(15, 159, 110, 0.18);
         color: var(--accent);
         font-family: "JetBrains Mono", monospace;
         font-size: 11px;
@@ -453,7 +454,7 @@
         transform: scaleX(0);
         transform-origin: left;
         transition: 160ms ease;
-        background: linear-gradient(90deg, rgba(99, 91, 255, 0.7), transparent);
+        background: linear-gradient(90deg, rgba(15, 159, 110, 0.75), transparent);
       }
 
       .day-tile:hover::before {
@@ -503,7 +504,28 @@
       .progress-fill {
         height: 100%;
         border-radius: inherit;
-        background: linear-gradient(90deg, var(--accent), #7ac7ff);
+        background: linear-gradient(90deg, var(--accent), var(--ok2));
+      }
+
+      .goal-track {
+        position: relative;
+        overflow: hidden;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(15, 159, 110, 0.1);
+        border: 1px solid rgba(15, 159, 110, 0.08);
+      }
+
+      .goal-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), var(--ok2));
+      }
+
+      .analytics-card {
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(240, 255, 248, 0.9)),
+          var(--surface);
       }
 
       .exercise-block {
@@ -572,8 +594,8 @@
         margin-top: 10px;
         padding: 14px;
         border-radius: 18px;
-        border: 1px solid rgba(99, 91, 255, 0.16);
-        background: linear-gradient(180deg, rgba(99, 91, 255, 0.08), rgba(99, 91, 255, 0.03));
+        border: 1px solid rgba(15, 159, 110, 0.16);
+        background: linear-gradient(180deg, rgba(15, 159, 110, 0.08), rgba(15, 159, 110, 0.03));
         animation: slideDown 0.2s ease;
       }
 
@@ -604,8 +626,8 @@
       }
 
       .feedback-btn.active {
-        background: rgba(99, 91, 255, 0.09);
-        border-color: rgba(99, 91, 255, 0.24);
+        background: rgba(15, 159, 110, 0.09);
+        border-color: rgba(15, 159, 110, 0.24);
         color: var(--text);
       }
 
