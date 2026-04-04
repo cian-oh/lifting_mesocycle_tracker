@@ -2006,6 +2006,13 @@ function HomeScreen({
             </div>
           </div>
 
+          <div className="card stack" style={{ gap: 8 }}>
+            <div className="eyebrow">What Is A Mesocycle?</div>
+            <div className="small">
+              A mesocycle is a focused block of training, usually 4 to 8 weeks, where you keep the structure stable and progress load, effort, and volume across the block before resetting.
+            </div>
+          </div>
+
           <div className="grid-2">
             {daySlots.map((daySlot) => {
               const muscles = daySlot.muscles;
