@@ -539,6 +539,49 @@
         box-shadow: 0 20px 38px rgba(15, 23, 42, 0.1);
       }
 
+      .support-hero {
+        position: relative;
+        overflow: hidden;
+        padding: 22px;
+        border-radius: 28px;
+        border-color: rgba(24, 166, 111, 0.22);
+        background:
+          radial-gradient(circle at top right, rgba(24, 166, 111, 0.14), transparent 28%),
+          radial-gradient(circle at bottom left, rgba(38, 112, 255, 0.08), transparent 30%),
+          linear-gradient(180deg, rgba(248, 255, 251, 0.98), rgba(236, 249, 243, 0.96)),
+          var(--surface);
+        box-shadow: 0 26px 48px rgba(15, 23, 42, 0.08);
+      }
+
+      .support-hero::after {
+        content: "";
+        position: absolute;
+        inset: auto 0 0 0;
+        height: 4px;
+        background: linear-gradient(90deg, var(--accent), var(--ok2));
+      }
+
+      .support-hero-points {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .support-hero-cta {
+        display: flex;
+        justify-content: flex-start;
+      }
+
+      .support-hero .btn-primary {
+        width: auto;
+        pointer-events: none;
+      }
+
+      .platform-secondary-card {
+        min-height: 180px;
+        justify-content: space-between;
+      }
+
       .contact-points .mono {
         word-break: break-word;
       }
@@ -554,7 +597,54 @@
       .section-divider {
         height: 1px;
         background: linear-gradient(90deg, rgba(16, 40, 70, 0.14), rgba(16, 40, 70, 0.02));
-        margin: 6px 2px 2px;
+        margin: 10px 2px 4px;
+      }
+
+      .home-coaching-grid {
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 16px;
+      }
+
+      .coaching-phase-card,
+      .coaching-recovery-card {
+        min-height: 220px;
+      }
+
+      .coaching-phase-card {
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 253, 0.94)),
+          var(--surface);
+      }
+
+      .coaching-recovery-card {
+        background:
+          linear-gradient(180deg, rgba(252, 255, 253, 0.96), rgba(245, 251, 247, 0.94)),
+          var(--surface);
+      }
+
+      .coaching-recovery-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .coaching-recovery-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 0;
+        border-top: 1px solid rgba(16, 40, 70, 0.06);
+      }
+
+      .coaching-recovery-row:first-child {
+        border-top: 0;
+        padding-top: 2px;
+      }
+
+      .coaching-empty-state {
+        background: linear-gradient(180deg, rgba(246, 249, 252, 0.9), rgba(250, 252, 255, 0.9));
       }
 
       .hero-topline {
@@ -987,6 +1077,7 @@
       }
 
       @media (max-width: 380px) {
+        .home-coaching-grid,
         .hero-actions,
         .week-hero,
         .insight-grid,

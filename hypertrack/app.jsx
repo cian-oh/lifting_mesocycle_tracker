@@ -2971,6 +2971,8 @@ function HomeScreen({
   const summary = getMesoSummaryStats(meso);
   const phaseGuide = getPhaseGuide(meso);
   const recoveryOverview = getRecoveryOverview(meso, activeMuscles);
+  const recoveryPreview = (recoveryOverview.items || []).filter((item) => item.label !== "Awaiting feedback");
+  const showRecoveryEmptyState = recoveryPreview.length === 0;
   const unitLabel = getUnitLabel(meso?.unit);
   return (
     <div className="stack">
@@ -3130,16 +3132,16 @@ function HomeScreen({
           <div className="page-section-head">
             <div className="eyebrow">Coaching</div>
             <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
-              Phase And Recovery Guide
+              Guidance For This Week
             </div>
           </div>
 
-          <div className="grid-2">
-            <div className="card stack section-card">
+          <div className="home-coaching-grid">
+            <div className="card stack section-card coaching-phase-card">
               <div className="title-row">
                 <div>
                   <div className="eyebrow">Current Phase</div>
-                  <div className="display" style={{ fontSize: 36, lineHeight: 0.92 }}>
+                  <div className="display" style={{ fontSize: 30, lineHeight: 0.96 }}>
                     {phaseGuide?.title}
                   </div>
                 </div>
@@ -3150,29 +3152,39 @@ function HomeScreen({
               <div className="small">{phaseGuide?.copy}</div>
               <div className="tiny muted">{phaseGuide?.focus}</div>
             </div>
-            <div className="card stack section-card">
+            <div className="card stack section-card coaching-recovery-card">
               <div className="title-row">
                 <div>
                   <div className="eyebrow">Recovery Signals</div>
-                  <div className="display" style={{ fontSize: 36, lineHeight: 0.92 }}>
-                    Readiness This Week
+                  <div className="display" style={{ fontSize: 30, lineHeight: 0.96 }}>
+                    Recovery Snapshot
                   </div>
                 </div>
                 <div className="mono tiny gold">
                   {recoveryOverview.ready} ready · {recoveryOverview.hold} hold · {recoveryOverview.recover} recover
                 </div>
               </div>
-              {(recoveryOverview.items || []).slice(0, 4).map((item) => (
-                <div key={`recovery-${item.muscle}`} className="title-row">
-                  <div>
-                    <div className="small">{item.muscle}</div>
-                    <div className="tiny muted">{item.detail}</div>
+              {showRecoveryEmptyState ? (
+                <div className="notice coaching-empty-state">
+                  <div className="small">
+                    Recovery guidance unlocks after you log and rate muscle feedback in completed sessions.
                   </div>
-                  <div className="status-chip" style={getCoachToneStyles(item.tone)}>
-                    {item.label}
+                  <div className="tiny muted">
+                    Once you have feedback, this section will surface where to push, hold, or recover.
                   </div>
                 </div>
-              ))}
+              ) : (
+                <div className="coaching-recovery-list">
+                  {recoveryPreview.slice(0, 4).map((item) => (
+                    <div key={`recovery-${item.muscle}`} className="coaching-recovery-row">
+                      <div className="small">{item.muscle}</div>
+                      <div className="status-chip" style={getCoachToneStyles(item.tone)}>
+                        {item.label}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -3301,9 +3313,9 @@ function HomeScreen({
           <div className="section-divider" />
 
           <div className="page-section-head">
-            <div className="eyebrow">Overall Info</div>
+            <div className="eyebrow">Guidance</div>
             <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
-              Guidance And Platform
+              How The Block Works
             </div>
           </div>
 
@@ -3320,29 +3332,63 @@ function HomeScreen({
                 A mesocycle is a focused 4 to 8 week block where you keep the structure stable and progress load, effort, and volume across the phase.
               </div>
             </div>
-            <div className="card stack metric-card">
-              <div className="eyebrow">Archive</div>
-              <div className="display" style={{ fontSize: 42, lineHeight: 0.88 }}>
-                {archivedMesos.length}
+            <div className="card stack section-card">
+              <div className="eyebrow">Mesocycle Structure</div>
+              <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
+                Stable Plan, Clear Feedback
               </div>
-              <div className="tiny muted">previous mesocycles saved to your account</div>
-              <button className="btn-ghost" onClick={onOpenArchive}>
-                View Previous
-              </button>
+              <div className="small">
+                Keep the split and core exercises stable long enough to judge progression, then use RIR, soreness, and performance to adjust the next week intelligently.
+              </div>
+              <div className="tiny muted">
+                The goal is not to max out every session. The goal is to build repeatable productive weeks across the full phase.
+              </div>
             </div>
           </div>
 
+          <div className="section-divider" />
+
+          <div className="page-section-head">
+            <div className="eyebrow">Platform</div>
+            <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+              Support And Account
+            </div>
+          </div>
+
+          <button className="card action-panel support-hero stack" onClick={onOpenSupport}>
+            <div className="title-row" style={{ alignItems: "flex-start" }}>
+              <div>
+                <div className="eyebrow">Support HyperPhases</div>
+                <div className="display" style={{ fontSize: 40, lineHeight: 0.92 }}>
+                  Keep HyperPhases Free
+                </div>
+              </div>
+              <div className="status-chip status-chip-good">One-time support</div>
+            </div>
+            <div className="small">
+              Help fund development, hosting, and the next round of product improvements while keeping the core tracking experience subscription-free.
+            </div>
+            <div className="support-hero-points">
+              <span className="status-chip">Secure checkout</span>
+              <span className="status-chip">No subscription</span>
+              <span className="status-chip">Directly supports product work</span>
+            </div>
+            <div className="support-hero-cta">
+              <span className="btn-primary">Support The Platform</span>
+            </div>
+          </button>
+
           <div className="grid-2">
-            <button className="card action-panel stack" onClick={onOpenSupport}>
-              <div className="eyebrow">Support The Platform</div>
+            <button className="card action-panel platform-secondary-card" onClick={onOpenArchive}>
+              <div className="eyebrow">Archive</div>
               <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
-                Keep It Moving
+                Review Previous Blocks
               </div>
               <div className="small muted">
-                Support development, hosting, and future product improvements without turning HyperPhases into a subscription app.
+                {archivedMesos.length} mesocycles saved to your account for comparison and reuse.
               </div>
             </button>
-            <button className="card action-panel stack" onClick={onOpenContact}>
+            <button className="card action-panel platform-secondary-card" onClick={onOpenContact}>
               <div className="eyebrow">Contact & Feedback</div>
               <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
                 Reach The Team
