@@ -512,6 +512,27 @@ function createSupabaseClient(config) {
   }
 }
 
+function formatAuthError(error, fallback) {
+  const message = String(error?.message || "").trim();
+  if (!message) return fallback;
+  const lower = message.toLowerCase();
+
+  if (lower.includes("invalid login credentials")) {
+    return "Email or password is incorrect.";
+  }
+  if (lower.includes("email not confirmed")) {
+    return "Check your email and confirm your address before signing in.";
+  }
+  if (lower.includes("user already registered")) {
+    return "That email already has an account. Use Sign In instead.";
+  }
+  if (lower.includes("password should be at least")) {
+    return message.replace("should be", "must be");
+  }
+
+  return message;
+}
+
 function withUpdatedAt(meso) {
   return {
     ...meso,
@@ -1442,7 +1463,7 @@ function App() {
         }
       } catch (error) {
         console.error(error);
-        setCloudStatus("Sign-up failed");
+        setCloudStatus(formatAuthError(error, "Sign-up failed."));
       } finally {
         setCloudBusy(false);
       }
@@ -1472,7 +1493,7 @@ function App() {
         setToast("Signed in");
       } catch (error) {
         console.error(error);
-        setCloudStatus("Sign-in failed");
+        setCloudStatus(formatAuthError(error, "Sign-in failed."));
       } finally {
         setCloudBusy(false);
       }
@@ -1501,7 +1522,7 @@ function App() {
         setToast("Password reset email sent");
       } catch (error) {
         console.error(error);
-        setCloudStatus("Password reset request failed");
+        setCloudStatus(formatAuthError(error, "Password reset request failed."));
       } finally {
         setCloudBusy(false);
       }
@@ -3502,7 +3523,7 @@ function AuthScreen({
           <span className="accent">Phases</span>
         </div>
         <div className="hero-subtitle">
-          Sign in to plan, log, and archive every mesocycle in one place. Your training state stays tied to your account across devices.
+          Create an account with email and password, then sign in anywhere to plan, log, and archive every mesocycle in one place.
         </div>
       </div>
       <CloudSyncCard
@@ -3549,11 +3570,15 @@ function CloudSyncCard({
   const [password, setPassword] = useState("");
   const [bodyweight, setBodyweight] = useState(bodyweightProfile?.currentBodyweight || "");
   const [bodyweightUnit, setBodyweightUnit] = useState(bodyweightProfile?.bodyweightUnit || preferredUnit || DEFAULT_UNIT);
-  const accountTitle = cloudUser ? `You are now signed in as ${cloudUser.email}` : "Sign in to start tracking";
+  const accountTitle = cloudUser ? `You are now signed in as ${cloudUser.email}` : "Sign in or create your account";
   const accountSummary = cloudUser
     ? "Your active mesocycle and archive live in your account, so your state stays consistent across devices."
-    : "Sign in before planning or logging so HyperPhases always opens to the right account state.";
-  const statusTone = /failed/i.test(cloudStatus) ? "accent" : cloudUser ? "gold" : "muted";
+    : "Use the same email and password fields for both paths: create a new account or sign back into an existing one.";
+  const statusTone = /failed|invalid|incorrect|unavailable|unable/i.test(cloudStatus)
+    ? "accent"
+    : /signed in|updated|sent|created|saved|confirmed/i.test(cloudStatus)
+      ? "gold"
+      : "muted";
 
   useEffect(() => {
     setUrl(initialConfig?.url || "");
@@ -3578,7 +3603,22 @@ function CloudSyncCard({
         {accountTitle}
       </div>
       <div className="small">{accountSummary}</div>
-      <div className={`mono tiny ${statusTone}`}>{cloudStatus}</div>
+      <div
+        className="inset stack"
+        style={{
+          gap: 6,
+          padding: 14,
+          background:
+            statusTone === "accent"
+              ? "linear-gradient(180deg, rgba(217, 121, 23, 0.08), rgba(255, 255, 255, 0.95))"
+              : statusTone === "gold"
+                ? "linear-gradient(180deg, rgba(24, 166, 111, 0.08), rgba(255, 255, 255, 0.95))"
+                : undefined,
+        }}
+      >
+        <div className="label tiny">Status</div>
+        <div className={`mono small ${statusTone}`}>{cloudStatus}</div>
+      </div>
       {!hasHostedConfig && (
         <>
           <input
@@ -3609,6 +3649,26 @@ function CloudSyncCard({
       />
       {!cloudUser && (
         <>
+          <div className="notice stack" style={{ gap: 12 }}>
+            <div className="eyebrow">Email Account Access</div>
+            <div className="grid-2">
+              <div className="step-card stack" style={{ gap: 8, padding: 14 }}>
+                <div className="label tiny accent">New User</div>
+                <div className="small">
+                  Enter your email and password, then tap <span className="mono">Create Account With Email</span>.
+                </div>
+              </div>
+              <div className="step-card stack" style={{ gap: 8, padding: 14 }}>
+                <div className="label tiny gold">Returning User</div>
+                <div className="small">
+                  Use the same fields, then tap <span className="mono">Sign In</span> to load your account data.
+                </div>
+              </div>
+            </div>
+            <div className="small muted">
+              Password guidance: use at least 8 characters. Supabase may accept different rules, but shorter passwords are more likely to fail or be too weak.
+            </div>
+          </div>
           <input
             type="password"
             value={password}
@@ -3630,7 +3690,7 @@ function CloudSyncCard({
               disabled={cloudBusy || !email.trim() || !password}
               onClick={() => onSignUp(email.trim(), password)}
             >
-              Create Account
+              {cloudBusy ? "Working..." : "Create Account With Email"}
             </button>
             <button
               className="btn-sm"
@@ -3639,6 +3699,9 @@ function CloudSyncCard({
             >
               {cloudBusy ? "Working..." : "Sign In"}
             </button>
+          </div>
+          <div className="tiny muted">
+            If email confirmation is enabled in Supabase, you will receive a verification email before your first full sign-in.
           </div>
         </>
       )}
