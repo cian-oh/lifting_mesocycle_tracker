@@ -153,6 +153,38 @@ const STEP_LABELS = {
   resume: [0, 1, 2, 3],
 };
 const BODYWEIGHT_EXERCISES = new Set(["Pull-Up", "Dip"]);
+const PUBLIC_FEATURES = [
+  {
+    eyebrow: "Split",
+    title: "Build your own phase",
+    copy: "Use popular templates or tune the split yourself.",
+    stat: "Custom splits",
+  },
+  {
+    eyebrow: "Progression",
+    title: "Progress from real effort",
+    copy: "Weekly RIR targets and prior logs shape the next load.",
+    stat: "RIR-led",
+  },
+  {
+    eyebrow: "History",
+    title: "Keep every block connected",
+    copy: "History, trends, and archived mesocycles stay with your account.",
+    stat: "Archive built in",
+  },
+];
+const PUBLIC_EVIDENCE = [
+  {
+    source: "Refalo et al. · Sports Medicine · 2023",
+    title: "Near-failure is highly effective",
+    copy: "Always going to absolute failure does not appear necessary for hypertrophy.",
+  },
+  {
+    source: "Grgic et al. · Journal of Sport and Health Science · 2022",
+    title: "RIR helps manage fatigue",
+    copy: "Stopping short of failure can still work very well when effort is prescribed well.",
+  },
+];
 
 function loadSupabaseConfig() {
   const deployed = {
@@ -262,6 +294,17 @@ const EQUIPMENT_EXERCISES = {
 
 function createSlotId(prefix = "slot") {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function scrollToSection(id) {
+  try {
+    window.document.getElementById(id)?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  } catch (error) {
+    console.error(error);
+  }
 }
 
 function instantiatePreset(presetKey) {
@@ -1261,7 +1304,7 @@ function App() {
   const [supabaseClient, setSupabaseClient] = useState(null);
   const [cloudUser, setCloudUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
-  const [cloudStatus, setCloudStatus] = useState("Sign in to use HyperPhases.");
+  const [cloudStatus, setCloudStatus] = useState("");
   const [cloudBusy, setCloudBusy] = useState(false);
   const [supportSuccess, setSupportSuccess] = useState(() => {
     try {
@@ -1303,7 +1346,7 @@ function App() {
       setCloudStatus(
         cloudConfig.url || cloudConfig.anonKey
           ? "Connection details are incomplete."
-          : "Connect Supabase to sign in and use HyperPhases."
+          : ""
       );
       return undefined;
     }
@@ -1317,20 +1360,14 @@ function App() {
         return;
       }
       setCloudUser(data.user || null);
-      setCloudStatus(
-        data.user ? `You are now signed in as ${data.user.email}` : "Sign in to use HyperPhases."
-      );
+      setCloudStatus(data.user ? `You are now signed in as ${data.user.email}` : "");
       setAuthReady(true);
     });
     const {
       data: { subscription },
     } = client.auth.onAuthStateChange((_event, session) => {
       setCloudUser(session?.user || null);
-      setCloudStatus(
-        session?.user
-          ? `You are now signed in as ${session.user.email}`
-          : "Sign in to use HyperPhases."
-      );
+      setCloudStatus(session?.user ? `You are now signed in as ${session.user.email}` : "");
       setAuthReady(true);
     });
     return () => {
@@ -1433,14 +1470,14 @@ function App() {
   const handleSaveCloudConfig = useCallback((config) => {
     saveSupabaseConfig(config);
     setCloudConfig(config);
-    setToast("Supabase config saved");
+    setToast("Connection saved");
   }, []);
 
   const handleSignUp = useCallback(
     async (email, password) => {
       const client = createSupabaseClient(cloudConfig);
       if (!client) {
-        setCloudStatus("Enter Supabase URL and anon key first");
+        setCloudStatus("Connection is not configured yet.");
         return;
       }
       if (!email || !password) {
@@ -1475,7 +1512,7 @@ function App() {
     async (email, password) => {
       const client = createSupabaseClient(cloudConfig);
       if (!client) {
-        setCloudStatus("Enter Supabase URL and anon key first");
+        setCloudStatus("Connection is not configured yet.");
         return;
       }
       if (!email || !password) {
@@ -1505,7 +1542,7 @@ function App() {
     async (email) => {
       const client = createSupabaseClient(cloudConfig);
       if (!client) {
-        setCloudStatus("Enter Supabase URL and anon key first");
+        setCloudStatus("Connection is not configured yet.");
         return;
       }
       if (!email) {
@@ -1854,6 +1891,8 @@ function App() {
           onSignUp={handleSignUp}
           onSignIn={handleSignIn}
           onForgotPassword={handleForgotPassword}
+          onOpenSupport={openSupportScreen}
+          onOpenContact={openContactScreen}
         />
       )}
       {screen === "welcome" && (
@@ -3512,41 +3551,150 @@ function AuthScreen({
   onSignUp,
   onSignIn,
   onForgotPassword,
+  onOpenSupport,
+  onOpenContact,
 }) {
+  const previewTrendBars = [
+    { label: "Incline Press", value: 84 },
+    { label: "Pull-Up", value: 72 },
+    { label: "Hack Squat", value: 91 },
+  ];
+
   return (
-    <div className="centered stack" style={{ gap: 18 }}>
-      <div className="card hero-card stack">
-        <div className="eyebrow">Cloud-First Training</div>
-        <div className="display" style={{ fontSize: 104, lineHeight: 0.82 }}>
-          Hyper
-          <br />
-          <span className="accent">Phases</span>
-        </div>
-        <div className="hero-subtitle">
-          Create an account with email and password, then sign in anywhere to plan, log, and archive every mesocycle in one place.
+    <div className="stack public-page">
+      <div className="card hero-card hero-panel stack public-hero">
+        <div className="hero-orbit hero-orbit-a" />
+        <div className="hero-orbit hero-orbit-b" />
+        <div className="public-hero-grid">
+          <div className="stack public-hero-copy">
+            <div className="eyebrow">Effort-Led Hypertrophy Tracking</div>
+            <div className="hero-title-block">
+              <div className="display" style={{ fontSize: 104, lineHeight: 0.82 }}>
+                Hyper
+                <br />
+                <span className="accent">Phases</span>
+              </div>
+              <div className="hero-subtitle public-hero-subtitle">
+                The clean way to run a hypertrophy phase with clear effort targets, fast logging, and real progression history.
+              </div>
+            </div>
+            <div className="public-chip-row">
+              <span className="status-chip status-chip-good">Custom splits</span>
+              <span className="status-chip">RIR-led progression</span>
+              <span className="status-chip">Archive included</span>
+            </div>
+            <div className="hero-actions public-hero-actions">
+              <button className="btn-primary" onClick={() => scrollToSection("public-signup")}>
+                Create Free Account
+              </button>
+              <button className="btn-ghost" onClick={() => scrollToSection("public-evidence")}>
+                Why RIR Works
+              </button>
+            </div>
+          </div>
         </div>
       </div>
-      <CloudSyncCard
-        hasMeso={false}
-        initialConfig={initialConfig}
-        cloudUser={cloudUser}
-        cloudStatus={cloudStatus}
-        cloudBusy={cloudBusy}
-        onSaveCloudConfig={onSaveCloudConfig}
-        onSignUp={onSignUp}
-        onSignIn={onSignIn}
-        onForgotPassword={onForgotPassword}
-        onSignOut={() => {}}
-        onRefresh={() => {}}
-        onOpenArchive={() => {}}
-        archivedCount={0}
-      />
+
+      <div className="page-section-head">
+        <div className="eyebrow">Features</div>
+        <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
+          Why People Use It
+        </div>
+      </div>
+      <div className="public-feature-grid">
+        {PUBLIC_FEATURES.map((feature) => (
+          <div key={feature.title} className="card stack section-card public-feature-card">
+            <div className="title-row" style={{ alignItems: "flex-start" }}>
+              <div>
+                <div className="eyebrow">{feature.eyebrow}</div>
+                <div className="display" style={{ fontSize: 32, lineHeight: 0.94 }}>
+                  {feature.title}
+                </div>
+              </div>
+              <div className="status-chip status-chip-good">{feature.stat}</div>
+            </div>
+            <div className="small">{feature.copy}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card support-note public-callout stack">
+        <div className="eyebrow">What A Mesocycle Is</div>
+        <div className="display" style={{ fontSize: 34, lineHeight: 0.92 }}>
+          One focused 4 to 8 week phase
+        </div>
+        <div className="small">
+          Keep the plan stable, progress it honestly, then build the next block from real data.
+        </div>
+      </div>
+
+      <div id="public-evidence" className="stack">
+        <div className="page-section-head">
+          <div className="eyebrow">Why RIR Works</div>
+          <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
+            Train hard without guessing
+          </div>
+        </div>
+        <div className="card stack section-card public-research-lead">
+          <div className="small">
+            RIR gives you a practical way to push hard enough for growth without forcing every set to absolute failure.
+          </div>
+        </div>
+        <div className="public-evidence-grid">
+          {PUBLIC_EVIDENCE.map((item) => (
+            <div key={item.source} className="card stack public-evidence-card">
+              <div className="mono tiny gold">{item.source}</div>
+              <div className="display" style={{ fontSize: 28, lineHeight: 0.94 }}>
+                {item.title}
+              </div>
+              <div className="small">{item.copy}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div id="public-signup" className="card hero-panel public-signup-band">
+        <div className="public-signup-grid">
+          <div className="stack public-signup-copy">
+            <div className="eyebrow">Get Started</div>
+            <div className="display" style={{ fontSize: 48, lineHeight: 0.9 }}>
+              Start Your First Phase
+            </div>
+            <div className="small">
+              Create an account and keep every block tied to your own history.
+            </div>
+            <div className="public-chip-row">
+              <span className="status-chip status-chip-good">Free to start</span>
+              <span className="status-chip">Email + password</span>
+            </div>
+          </div>
+
+          <CloudSyncCard
+            hasMeso={false}
+            publicMode
+            initialConfig={initialConfig}
+            cloudUser={cloudUser}
+            cloudStatus={cloudStatus}
+            cloudBusy={cloudBusy}
+            onSaveCloudConfig={onSaveCloudConfig}
+            onSignUp={onSignUp}
+            onSignIn={onSignIn}
+            onForgotPassword={onForgotPassword}
+            onSignOut={() => {}}
+            onRefresh={() => {}}
+            onOpenArchive={() => {}}
+            archivedCount={0}
+          />
+        </div>
+      </div>
+
     </div>
   );
 }
 
 function CloudSyncCard({
   hasMeso,
+  publicMode = false,
   initialConfig,
   cloudUser,
   bodyweightProfile,
@@ -3566,24 +3714,40 @@ function CloudSyncCard({
   const hasHostedConfig = Boolean(initialConfig?.url && initialConfig?.anonKey);
   const [url, setUrl] = useState(initialConfig?.url || "");
   const [anonKey, setAnonKey] = useState(initialConfig?.anonKey || "");
+  const [showConnectionSettings, setShowConnectionSettings] = useState(false);
   const [email, setEmail] = useState(cloudUser?.email || "");
   const [password, setPassword] = useState("");
   const [bodyweight, setBodyweight] = useState(bodyweightProfile?.currentBodyweight || "");
   const [bodyweightUnit, setBodyweightUnit] = useState(bodyweightProfile?.bodyweightUnit || preferredUnit || DEFAULT_UNIT);
-  const accountTitle = cloudUser ? `You are now signed in as ${cloudUser.email}` : "Sign in or create your account";
+  const accountEyebrow = cloudUser ? "Account" : publicMode ? "Email Access" : "Account";
+  const accountTitle = cloudUser
+    ? `You are now signed in as ${cloudUser.email}`
+    : publicMode
+      ? "Create your account"
+      : "Sign in or create your account";
   const accountSummary = cloudUser
     ? "Your active mesocycle and archive live in your account, so your state stays consistent across devices."
-    : "Use the same email and password fields for both paths: create a new account or sign back into an existing one.";
+    : publicMode
+      ? "Use the same email and password fields for both paths: create a new account or sign back into an existing one."
+      : "Use the same email and password fields for both paths: create a new account or sign back into an existing one.";
   const statusTone = /failed|invalid|incorrect|unavailable|unable/i.test(cloudStatus)
     ? "accent"
     : /signed in|updated|sent|created|saved|confirmed/i.test(cloudStatus)
       ? "gold"
       : "muted";
+  const showStatus = Boolean(cloudStatus);
+  const shouldShowConnectionFields = !hasHostedConfig && (!publicMode || showConnectionSettings);
 
   useEffect(() => {
     setUrl(initialConfig?.url || "");
     setAnonKey(initialConfig?.anonKey || "");
   }, [initialConfig]);
+
+  useEffect(() => {
+    if (hasHostedConfig) {
+      setShowConnectionSettings(false);
+    }
+  }, [hasHostedConfig]);
 
   useEffect(() => {
     if (cloudUser?.email) {
@@ -3597,41 +3761,51 @@ function CloudSyncCard({
   }, [bodyweightProfile, preferredUnit]);
 
   return (
-    <div className="card stack">
-      <div className="eyebrow">Account</div>
+    <div className={`card stack ${publicMode ? "public-account-card" : ""}`}>
+      <div className="eyebrow">{accountEyebrow}</div>
       <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
         {accountTitle}
       </div>
       <div className="small">{accountSummary}</div>
-      <div
-        className="inset stack"
-        style={{
-          gap: 6,
-          padding: 14,
-          background:
-            statusTone === "accent"
-              ? "linear-gradient(180deg, rgba(217, 121, 23, 0.08), rgba(255, 255, 255, 0.95))"
-              : statusTone === "gold"
-                ? "linear-gradient(180deg, rgba(24, 166, 111, 0.08), rgba(255, 255, 255, 0.95))"
-                : undefined,
-        }}
-      >
-        <div className="label tiny">Status</div>
-        <div className={`mono small ${statusTone}`}>{cloudStatus}</div>
-      </div>
-      {!hasHostedConfig && (
+      {showStatus && (
+        <div
+          className="inset stack"
+          style={{
+            gap: 6,
+            padding: 14,
+            background:
+              statusTone === "accent"
+                ? "linear-gradient(180deg, rgba(217, 121, 23, 0.08), rgba(255, 255, 255, 0.95))"
+                : statusTone === "gold"
+                  ? "linear-gradient(180deg, rgba(24, 166, 111, 0.08), rgba(255, 255, 255, 0.95))"
+                  : undefined,
+          }}
+        >
+          {!publicMode && <div className="label tiny">Status</div>}
+          <div className={`mono small ${statusTone}`}>{cloudStatus}</div>
+        </div>
+      )}
+      {publicMode && !hasHostedConfig && (
+        <button
+          className="text-action"
+          onClick={() => setShowConnectionSettings((current) => !current)}
+        >
+          {showConnectionSettings ? "Hide connection settings" : "Manual connection settings"}
+        </button>
+      )}
+      {shouldShowConnectionFields && (
         <>
           <input
             type="text"
             value={url}
             onChange={(event) => setUrl(event.target.value)}
-            placeholder="Supabase project URL"
+            placeholder="Project URL"
           />
           <input
             type="text"
             value={anonKey}
             onChange={(event) => setAnonKey(event.target.value)}
-            placeholder="Supabase anon key"
+            placeholder="Public key"
           />
           <button
             className="btn-ghost"
@@ -3649,26 +3823,32 @@ function CloudSyncCard({
       />
       {!cloudUser && (
         <>
-          <div className="notice stack" style={{ gap: 12 }}>
-            <div className="eyebrow">Email Account Access</div>
-            <div className="grid-2">
-              <div className="step-card stack" style={{ gap: 8, padding: 14 }}>
-                <div className="label tiny accent">New User</div>
-                <div className="small">
-                  Enter your email and password, then tap <span className="mono">Create Account With Email</span>.
-                </div>
-              </div>
-              <div className="step-card stack" style={{ gap: 8, padding: 14 }}>
-                <div className="label tiny gold">Returning User</div>
-                <div className="small">
-                  Use the same fields, then tap <span className="mono">Sign In</span> to load your account data.
-                </div>
-              </div>
-            </div>
+          {publicMode ? (
             <div className="small muted">
-              Password guidance: use at least 8 characters. Supabase may accept different rules, but shorter passwords are more likely to fail or be too weak.
+              Create a new account or sign back in with the same email and password.
             </div>
-          </div>
+          ) : (
+            <div className="notice stack" style={{ gap: 12 }}>
+              <div className="eyebrow">Email Account Access</div>
+              <div className="grid-2">
+                <div className="step-card stack" style={{ gap: 8, padding: 14 }}>
+                  <div className="label tiny accent">New User</div>
+                  <div className="small">
+                    Enter your email and password, then tap <span className="mono">Create Account With Email</span>.
+                  </div>
+                </div>
+                <div className="step-card stack" style={{ gap: 8, padding: 14 }}>
+                  <div className="label tiny gold">Returning User</div>
+                  <div className="small">
+                    Use the same fields, then tap <span className="mono">Sign In</span> to load your account data.
+                  </div>
+                </div>
+              </div>
+              <div className="small muted">
+                Password guidance: use at least 8 characters. Shorter passwords are more likely to fail or be too weak.
+              </div>
+            </div>
+          )}
           <input
             type="password"
             value={password}
@@ -3700,9 +3880,11 @@ function CloudSyncCard({
               {cloudBusy ? "Working..." : "Sign In"}
             </button>
           </div>
-          <div className="tiny muted">
-            If email confirmation is enabled in Supabase, you will receive a verification email before your first full sign-in.
-          </div>
+          {!publicMode && (
+            <div className="tiny muted">
+              If email confirmation is enabled, you will receive a verification email before your first full sign-in.
+            </div>
+          )}
         </>
       )}
       {cloudUser && (
@@ -3775,8 +3957,10 @@ function CloudSyncCard({
       )}
       <div className="tiny muted">
         {cloudUser
-          ? `${archivedCount || 0} archived mesocycles saved. Workout data is stored in Supabase, not in browser local storage.`
-          : "Once signed in, HyperPhases keeps workout data in Supabase so your training state follows your account."}
+          ? `${archivedCount || 0} archived mesocycles saved to your account.`
+          : publicMode
+            ? "Your phases and history stay tied to your account."
+            : "Once signed in, HyperPhases keeps your training state tied to your account."}
       </div>
     </div>
   );
