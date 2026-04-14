@@ -153,6 +153,9 @@ const STEP_LABELS = {
   resume: [0, 1, 2, 3],
 };
 const BODYWEIGHT_EXERCISES = new Set(["Pull-Up", "Dip"]);
+const SESSION_LENGTH_OPTIONS = ["short", "balanced", "long"];
+const HIGH_PRIORITY_REPEAT_MUSCLES = new Set(["Chest", "Back", "Quads"]);
+const SESSION_DRAFT_PREFIX = "hyperphases_session_draft";
 const PUBLIC_FEATURES = [
   {
     eyebrow: "Split",
@@ -465,6 +468,31 @@ function calcVolumeForWeek(week, totalWeeks) {
   );
 }
 
+function getSessionExerciseCap(preference) {
+  if (preference === "short") return 6;
+  if (preference === "long") return 9;
+  return 7;
+}
+
+function getMuscleFrequency(daySlots, muscle) {
+  return (daySlots || []).filter((slot) => slot.muscles.includes(muscle)).length;
+}
+
+function getRecommendedExerciseCount(muscle, daySlots, preference = "balanced") {
+  const frequency = getMuscleFrequency(daySlots, muscle);
+  const big = BIG_MUSCLES.has(muscle);
+  if (preference === "short") {
+    if (frequency >= 2) return big ? 2 : 1;
+    return big ? 2 : 1;
+  }
+  if (preference === "long") {
+    if (frequency >= 2) return big ? 3 : 2;
+    return big ? 3 : 2;
+  }
+  if (frequency >= 2) return big ? 3 : 2;
+  return big ? 2 : 2;
+}
+
 function getAvailableExercises(muscle, equipment) {
   const seen = new Set();
   const list = [];
@@ -496,6 +524,214 @@ function getRecommendedExercisePlan(equipment) {
   return Object.fromEntries(
     MUSCLES.map((muscle) => [muscle, getAvailableExercises(muscle, equipment).slice(0, 2)])
   );
+}
+
+function getRecommendedExercisePlanForSplit(equipment, daySlots, preference = "balanced") {
+  return Object.fromEntries(
+    MUSCLES.map((muscle) => [
+      muscle,
+      getAvailableExercises(muscle, equipment).slice(
+        0,
+        getRecommendedExerciseCount(muscle, daySlots, preference)
+      ),
+    ])
+  );
+}
+
+function buildExerciseAssignments({ daySlots, exercises, sessionLengthPreference }) {
+  const slots = normalizeDaySlots(daySlots);
+  const cap = getSessionExerciseCap(sessionLengthPreference);
+  const assignments = Object.fromEntries(
+    slots.map((slot) => [slot.id, Object.fromEntries(MUSCLES.map((muscle) => [muscle, []]))])
+  );
+
+  const getDayLoad = (slotId) =>
+    Object.values(assignments[slotId] || {}).reduce((sum, list) => sum + (list?.length || 0), 0);
+
+  const assignExercise = (slotId, muscle, exercise) => {
+    if (!assignments[slotId] || !exercise) return;
+    const current = assignments[slotId][muscle] || [];
+    if (current.includes(exercise)) return;
+    assignments[slotId][muscle] = [...current, exercise];
+  };
+
+  MUSCLES.forEach((muscle) => {
+    const selected = (exercises?.[muscle] || []).slice(0, 3);
+    if (!selected.length) return;
+    const muscleSlots = slots.filter((slot) => slot.muscles.includes(muscle));
+    if (!muscleSlots.length) return;
+
+    if (muscleSlots.length === 1) {
+      assignments[muscleSlots[0].id][muscle] = [...selected];
+      return;
+    }
+
+    const anchor = selected[0];
+    const extras = selected.slice(1);
+    const repeatAnchor =
+      selected.length === 1 || HIGH_PRIORITY_REPEAT_MUSCLES.has(muscle) || sessionLengthPreference !== "short";
+
+    muscleSlots.forEach((slot, idx) => {
+      if (repeatAnchor) {
+        assignExercise(slot.id, muscle, anchor);
+        return;
+      }
+      assignExercise(slot.id, muscle, selected[idx] || anchor);
+    });
+
+    extras.forEach((exercise) => {
+      const candidates = [...muscleSlots].sort((a, b) => {
+        const aHasAnchor = (assignments[a.id][muscle] || []).includes(anchor);
+        const bHasAnchor = (assignments[b.id][muscle] || []).includes(anchor);
+        const aPenalty = getDayLoad(a.id) >= cap ? 100 : 0;
+        const bPenalty = getDayLoad(b.id) >= cap ? 100 : 0;
+        return (getDayLoad(a.id) + aPenalty + (aHasAnchor ? 1 : 0)) - (getDayLoad(b.id) + bPenalty + (bHasAnchor ? 1 : 0));
+      });
+      assignExercise(candidates[0]?.id, muscle, exercise);
+    });
+
+    muscleSlots.forEach((slot) => {
+      if ((assignments[slot.id][muscle] || []).length === 0) {
+        assignExercise(slot.id, muscle, anchor);
+      }
+    });
+  });
+
+  return assignments;
+}
+
+function getAssignedExercisesForDay(meso, daySlotId, muscle) {
+  const assigned = meso?.exerciseAssignments?.[daySlotId]?.[muscle];
+  if (assigned?.length) return assigned;
+  return meso?.exercises?.[muscle] || [];
+}
+
+function ensureMesoPlanning(meso, fallbackPreference = "balanced") {
+  if (!meso) return meso;
+  const preference = SESSION_LENGTH_OPTIONS.includes(meso.sessionLengthPreference)
+    ? meso.sessionLengthPreference
+    : fallbackPreference;
+  return {
+    ...meso,
+    sessionLengthPreference: preference,
+    exerciseAssignments: buildExerciseAssignments({
+      daySlots: getMesoDaySlots(meso),
+      exercises: meso.exercises || {},
+      sessionLengthPreference: preference,
+    }),
+  };
+}
+
+function getRepPreset(muscle, exerciseName) {
+  const name = (exerciseName || "").toLowerCase();
+  if (muscle === "Calves" || name.includes("calf")) {
+    return { min: 12, max: 20, defaultReps: 15, rationale: "Calves usually respond best to higher-rep work." };
+  }
+  if (
+    /raise|curl|pushdown|extension|fly|kickback|face pull|rear delt|lateral|pec deck|curl machine|push-up|reverse fly/.test(
+      name
+    )
+  ) {
+    return { min: 10, max: 15, defaultReps: 12, rationale: "Isolation work is usually best kept in a moderate-to-higher rep range." };
+  }
+  if (
+    /pull-up|chin-up|dip|bench|press|row|squat|deadlift|rdl|romanian|hack squat|leg press|hip thrust|pulldown/.test(
+      name
+    )
+  ) {
+    return { min: 6, max: 10, defaultReps: 8, rationale: "This movement usually works best with lower-to-moderate hypertrophy reps." };
+  }
+  if (/machine|db |dumbbell|smith/.test(name)) {
+    return { min: 8, max: 12, defaultReps: 10, rationale: "This movement usually sits best in a classic hypertrophy rep range." };
+  }
+  if (isBodyweightExercise(exerciseName)) {
+    return { min: 6, max: 10, defaultReps: 8, rationale: "Bodyweight compounds usually work well in a moderate rep range." };
+  }
+  return { min: 8, max: 12, defaultReps: 10, rationale: "This movement usually sits best in a classic hypertrophy rep range." };
+}
+
+function getRecommendedRepRange(muscle, exerciseName) {
+  return getRepPreset(muscle, exerciseName);
+}
+
+function getSessionDraftKey({ userId, mesoId, week, daySlotId }) {
+  if (!userId || !mesoId || !daySlotId) return "";
+  return `${SESSION_DRAFT_PREFIX}_${userId}_${mesoId}_${week}_${daySlotId}`;
+}
+
+function loadSessionDraft({ userId, mesoId, week, daySlotId }) {
+  const key = getSessionDraftKey({ userId, mesoId, week, daySlotId });
+  if (!key) return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+}
+
+function saveSessionDraft({ userId, mesoId, week, daySlotId, draft }) {
+  const key = getSessionDraftKey({ userId, mesoId, week, daySlotId });
+  if (!key || !draft) return;
+  try {
+    localStorage.setItem(key, JSON.stringify(draft));
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function clearSessionDraft({ userId, mesoId, week, daySlotId }) {
+  const key = getSessionDraftKey({ userId, mesoId, week, daySlotId });
+  if (!key) return;
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function isExerciseResolved(block) {
+  return (
+    Boolean(block?.skipped) ||
+    ((block?.sets || []).length > 0 &&
+      (block?.sets || []).every((set) => Boolean(set.done) || Boolean(set.skipped)))
+  );
+}
+
+function isMuscleTrained(sessionState, muscle) {
+  const blocks = sessionState?.log?.[muscle] || [];
+  return blocks.some((block) => !block.skipped && block.sets.some((set) => set.done));
+}
+
+function getMuscleCompletionStats(sessionState, muscle) {
+  const blocks = sessionState?.log?.[muscle] || [];
+  let plannedSets = 0;
+  let completedSets = 0;
+  let skippedSets = 0;
+  blocks.forEach((block) => {
+    if (block.skipped) {
+      plannedSets += (block.sets || []).length;
+      skippedSets += (block.sets || []).length;
+      return;
+    }
+    (block.sets || []).forEach((set) => {
+      plannedSets += 1;
+      if (set.done) completedSets += 1;
+      else if (set.skipped) skippedSets += 1;
+    });
+  });
+  return {
+    plannedSets,
+    completedSets,
+    skippedSets,
+    completionRatio: plannedSets ? completedSets / plannedSets : 0,
+  };
+}
+
+function isSessionDirty(sessionState) {
+  return Boolean(sessionState?.dirty);
 }
 
 function createStorageAdapter() {
@@ -725,18 +961,23 @@ function buildSeedSession(exercises, prevWeights, increments) {
   MUSCLES.forEach((muscle) => {
     log[muscle] = (exercises[muscle] || []).map((exercise) => {
       const prev = prevWeights?.[muscle]?.[exercise] || {};
+      const repPreset = getRecommendedRepRange(muscle, exercise);
       return {
         exercise,
         increment: increments?.[exercise] || DEFAULT_INCREMENT,
         bodyweightMode: isBodyweightExercise(exercise),
         notes: "",
+        skipped: false,
         sets: [
           {
             id: Date.now() + Math.random(),
             weight: prev.weight || "",
-            reps: Number(prev.reps) || 10,
+            reps: Number(prev.reps) || repPreset.defaultReps,
             rir: prev.rir === "" ? "" : Number(prev.rir),
             done: Boolean(prev.weight || prev.reps || prev.rir !== ""),
+            skipped: false,
+            weightAuto: false,
+            repsAuto: false,
           },
         ],
       };
@@ -773,14 +1014,14 @@ function buildSessionState(meso, daySlotId, cloudUser) {
   const muscles = daySlot.muscles;
   const log = {};
   const targetRIR = targetRIRForWeek(meso.week);
-  const currentBodyweight = getCurrentBodyweightForUnit(cloudUser, meso.unit || DEFAULT_UNIT);
   muscles.forEach((muscle) => {
-    const selected = meso.exercises[muscle] || [];
+    const selected = getAssignedExercisesForDay(meso, daySlotId, muscle);
     if (!selected.length) return;
     const setsPerExercise = Math.max(2, Math.round((meso.weeklyVolume[muscle] || MEV_MRV[muscle][0]) / Math.max(1, selected.length)));
     log[muscle] = selected.map((exercise) => {
       const increment = meso.increments[exercise] || DEFAULT_INCREMENT;
       const bodyweightMode = getExerciseTracking(meso, exercise).bodyweight;
+      const repPreset = getRecommendedRepRange(muscle, exercise);
       const suggestedWeight = calcNextWeight({
         sessions: meso.sessions,
         muscle,
@@ -789,17 +1030,28 @@ function buildSessionState(meso, daySlotId, cloudUser) {
         week: meso.week,
       });
       const previous = getLastPerformance(meso.sessions, muscle, exercise);
+      const previousReps = Number(previous?.reps);
+      const suggestedReps =
+        !Number.isNaN(previousReps) &&
+        previousReps >= Math.max(1, repPreset.min - 1) &&
+        previousReps <= repPreset.max + 2
+          ? previousReps
+          : repPreset.defaultReps;
       return {
         exercise,
         increment,
         bodyweightMode,
         notes: "",
+        skipped: false,
         sets: Array.from({ length: setsPerExercise }).map((_, idx) => ({
           id: Date.now() + Math.random() + idx,
           weight: idx === 0 && suggestedWeight !== "" ? suggestedWeight : "",
-          reps: previous?.reps || 10,
+          reps: suggestedReps,
           rir: targetRIR,
           done: false,
+          skipped: false,
+          weightAuto: idx > 0,
+          repsAuto: idx > 0,
         })),
       };
     });
@@ -814,21 +1066,24 @@ function buildSessionState(meso, daySlotId, cloudUser) {
     log,
     feedback: {},
     notes: "",
+    dirty: false,
   };
 }
 
 function isMuscleDone(sessionState, muscle) {
   const blocks = sessionState?.log?.[muscle] || [];
-  return blocks.length > 0 && blocks.every((block) => block.sets.some((set) => set.done));
+  return blocks.length > 0 && blocks.every((block) => isExerciseResolved(block));
 }
 
-function isMuscleRated(sessionState, muscle) {
+function isMuscleRated(sessionState, muscle, week = 1) {
+  if (!isMuscleTrained(sessionState, muscle)) return true;
   const item = sessionState?.feedback?.[muscle];
+  const needsPerformance = week > 1;
   return (
     item &&
     item.pump !== undefined &&
     item.soreness !== undefined &&
-    item.performance !== undefined
+    (!needsPerformance || item.performance !== undefined)
   );
 }
 
@@ -863,11 +1118,15 @@ function advanceWeekIfNeeded(meso) {
 function applyVolumeProgression(meso, sessionState) {
   const nextVolume = { ...meso.weeklyVolume };
   Object.keys(sessionState.log || {}).forEach((muscle) => {
+    if (!isMuscleTrained(sessionState, muscle)) return;
     const feedback = sessionState.feedback[muscle] || {};
+    const completion = getMuscleCompletionStats(sessionState, muscle);
     let delta = 2;
     if ((feedback.pump ?? 0) <= 1) delta = 3;
     if ((feedback.soreness ?? 0) >= 3) delta = -2;
     else if ((feedback.soreness ?? 0) >= 2) delta = Math.min(delta, 0);
+    if (completion.completionRatio < 0.5) delta = Math.min(delta, -2);
+    else if (completion.completionRatio < 0.85) delta = Math.min(delta, 0);
     const [mev, mrv] = MEV_MRV[muscle];
     nextVolume[muscle] = clamp((nextVolume[muscle] || mev) + delta, mev, mrv);
   });
@@ -1336,6 +1595,30 @@ function App() {
   }, [supportSuccess]);
 
   useEffect(() => {
+    if (screen !== "session" || !sessionState || !meso || !cloudUser || !isSessionDirty(sessionState)) {
+      return undefined;
+    }
+    saveSessionDraft({
+      userId: cloudUser.id,
+      mesoId: meso.remoteId || meso.id,
+      week: sessionState.week,
+      daySlotId: sessionState.daySlotId,
+      draft: sessionState,
+    });
+    return undefined;
+  }, [cloudUser, meso, screen, sessionState]);
+
+  useEffect(() => {
+    if (screen !== "session" || !sessionState || !isSessionDirty(sessionState)) return undefined;
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [screen, sessionState]);
+
+  useEffect(() => {
     setAuthReady(false);
     const client = createSupabaseClient(cloudConfig);
     setSupabaseClient(client);
@@ -1380,10 +1663,24 @@ function App() {
     if (!supabaseClient || !cloudUser) return;
     try {
       setCloudBusy(true);
-      const [activeMeso, archived] = await Promise.all([
+      const [fetchedActiveMeso, archived] = await Promise.all([
         fetchRemoteMeso(supabaseClient, cloudUser.id, "active"),
         fetchArchivedMesos(supabaseClient, cloudUser.id),
       ]);
+      let activeMeso = fetchedActiveMeso;
+      if (activeMeso) {
+        const plannedMeso = ensureMesoPlanning(
+          activeMeso,
+          activeMeso.sessionLengthPreference || "short"
+        );
+        const needsPlanningUpdate =
+          plannedMeso.sessionLengthPreference !== activeMeso.sessionLengthPreference ||
+          JSON.stringify(plannedMeso.exerciseAssignments || {}) !==
+            JSON.stringify(activeMeso.exerciseAssignments || {});
+        if (needsPlanningUpdate) {
+          activeMeso = await pushRemoteMeso(supabaseClient, cloudUser.id, plannedMeso, "active");
+        }
+      }
       setMeso(activeMeso);
       setArchivedMesos(archived);
       setCloudStatus(
@@ -1660,13 +1957,32 @@ function App() {
       if (!meso) return;
       const done = getWeekDoneDaySlotIds(meso, meso.week);
       if (done.includes(daySlotId)) return;
-      const nextState = buildSessionState(meso, daySlotId, cloudUser);
+      const draft = loadSessionDraft({
+        userId: cloudUser?.id,
+        mesoId: meso.remoteId || meso.id,
+        week: meso.week,
+        daySlotId,
+      });
+      const nextState = draft || buildSessionState(meso, daySlotId, cloudUser);
       if (!nextState) return;
-      setSessionState(nextState);
+      setSessionState(draft ? { ...draft, dirty: true } : nextState);
       setScreen("session");
     },
     [cloudUser, meso]
   );
+
+  const handleSessionBack = useCallback(() => {
+    if (!sessionState) return;
+    if (isSessionDirty(sessionState)) {
+      const leave = window.confirm(
+        "Leave workout? Your progress will be kept as a draft and restored when you come back."
+      );
+      if (!leave) return;
+      setToast("Workout draft saved");
+    }
+    setSessionState(null);
+    setScreen("home");
+  }, [sessionState]);
 
   const saveSession = useCallback(async () => {
     if (!meso || !sessionState) return;
@@ -1690,10 +2006,16 @@ function App() {
       nextMeso = { ...nextMeso, completedAt: new Date().toISOString() };
     }
     await persistMeso(nextMeso);
+    clearSessionDraft({
+      userId: cloudUser?.id,
+      mesoId: meso.remoteId || meso.id,
+      week: sessionState.week,
+      daySlotId: sessionState.daySlotId,
+    });
     setSessionState(null);
     setScreen("home");
-    setToast("Session saved");
-  }, [meso, persistMeso, sessionState]);
+    setToast("Workout finished");
+  }, [cloudUser, meso, persistMeso, sessionState]);
 
   const handleSwap = useCallback(
     async (nextExercise) => {
@@ -1727,7 +2049,7 @@ function App() {
         [muscle]: meso.exercises[muscle].map((exercise, idx) => (idx === exIdx ? nextExercise : exercise)),
       };
       const nextMeso = {
-        ...meso,
+        ...ensureMesoPlanning(meso, meso.sessionLengthPreference || "short"),
         exercises: nextExercises,
         increments: {
           ...meso.increments,
@@ -1741,8 +2063,9 @@ function App() {
           },
         },
       };
-      setSessionState(nextSession);
-      await persistMeso(nextMeso);
+      const plannedMeso = ensureMesoPlanning(nextMeso, nextMeso.sessionLengthPreference || "short");
+      setSessionState({ ...nextSession, dirty: true });
+      await persistMeso(plannedMeso);
       setSwapTarget(null);
       setToast("Exercise swapped");
     },
@@ -1755,6 +2078,7 @@ function App() {
       const currentBodyweight = getCurrentBodyweightForUnit(cloudUser, meso.unit || DEFAULT_UNIT);
       const nextSession = {
         ...sessionState,
+        dirty: true,
         log: {
           ...sessionState.log,
           [muscle]: sessionState.log[muscle].map((block, idx) => {
@@ -1806,6 +2130,7 @@ function App() {
       if (sessionState && muscle != null && exIdx != null) {
         setSessionState({
           ...sessionState,
+          dirty: true,
           log: {
             ...sessionState.log,
             [muscle]: sessionState.log[muscle].map((block, idx) =>
@@ -1824,13 +2149,13 @@ function App() {
   const handleRemoveExercise = useCallback(
     async (muscle, exerciseName) => {
       if (!meso) return;
-      const nextMeso = {
+      const nextMeso = ensureMesoPlanning({
         ...meso,
         exercises: {
           ...meso.exercises,
           [muscle]: (meso.exercises[muscle] || []).filter((item) => item !== exerciseName),
         },
-      };
+      }, meso.sessionLengthPreference || "short");
       await persistMeso(nextMeso);
       setToast("Exercise removed from future sessions");
     },
@@ -1871,7 +2196,7 @@ function App() {
           },
         },
       };
-      await persistMeso(nextMeso);
+      await persistMeso(ensureMesoPlanning(nextMeso, meso.sessionLengthPreference || "short"));
       setToast("Exercise added to future sessions");
       return true;
     },
@@ -1956,10 +2281,7 @@ function App() {
           currentBodyweight={getCurrentBodyweightForUnit(cloudUser, meso.unit || DEFAULT_UNIT)}
           sessionState={sessionState}
           setSessionState={setSessionState}
-          onBack={() => {
-            setSessionState(null);
-            setScreen("home");
-          }}
+          onBack={handleSessionBack}
           onSave={saveSession}
           onSwap={(muscle, exIdx) => setSwapTarget({ muscle, exIdx })}
           onEditIncrement={(muscle, exIdx, currentInc, exerciseName) =>
@@ -2197,10 +2519,23 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
   const [equipment, setEquipment] = useState(DEFAULT_EQUIPMENT);
   const [unit, setUnit] = useState(DEFAULT_UNIT);
   const [weeks, setWeeks] = useState(6);
-  const [exercises, setExercises] = useState(() => getRecommendedExercisePlan(DEFAULT_EQUIPMENT));
+  const [sessionLengthPreference, setSessionLengthPreference] = useState("balanced");
+  const [exercises, setExercises] = useState(() =>
+    getRecommendedExercisePlanForSplit(
+      DEFAULT_EQUIPMENT,
+      instantiatePreset(SPLIT_PRESETS[0].key).daySlots,
+      "balanced"
+    )
+  );
   const [incrementsSetup, setIncrementsSetup] = useState(() =>
     Object.fromEntries(
-      Object.values(getRecommendedExercisePlan(DEFAULT_EQUIPMENT))
+      Object.values(
+        getRecommendedExercisePlanForSplit(
+          DEFAULT_EQUIPMENT,
+          instantiatePreset(SPLIT_PRESETS[0].key).daySlots,
+          "balanced"
+        )
+      )
         .flat()
         .map((exercise) => [exercise, DEFAULT_INCREMENT])
     )
@@ -2262,6 +2597,11 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
     setEquipment(initialTemplate.equipment?.length ? initialTemplate.equipment : DEFAULT_EQUIPMENT);
     setUnit(UNIT_OPTIONS.includes(initialTemplate.unit) ? initialTemplate.unit : DEFAULT_UNIT);
     setWeeks([4, 5, 6, 8].includes(initialTemplate.totalWeeks) ? initialTemplate.totalWeeks : 6);
+    setSessionLengthPreference(
+      SESSION_LENGTH_OPTIONS.includes(initialTemplate.sessionLengthPreference)
+        ? initialTemplate.sessionLengthPreference
+        : "balanced"
+    );
     setSelectedPresetKey(initialTemplate.split?.presetKey || "custom");
     setSplitName(initialTemplate.splitName || initialTemplate.split?.name || "Custom Split");
     setSplitDays(templateDaySlots);
@@ -2322,7 +2662,7 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
     const sourceExercises =
       initialTemplate && Object.values(exercises).some((list) => (list || []).length)
         ? exercises
-        : getRecommendedExercisePlan(equipment);
+        : getRecommendedExercisePlanForSplit(equipment, normalizedSplitDays, sessionLengthPreference);
     const { normalizedExercises, normalizedIncrements } = normalizeExercisesAndIncrements(
       sourceExercises,
       incrementsSetup
@@ -2397,9 +2737,15 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
         name: splitName.trim() || "Custom Split",
         daySlots,
       },
+      sessionLengthPreference,
       equipment,
       unit,
       exercises: normalizedExercises,
+      exerciseAssignments: buildExerciseAssignments({
+        daySlots,
+        exercises: normalizedExercises,
+        sessionLengthPreference,
+      }),
       weeklyVolume: weeklyVol,
       increments: normalizedIncrements,
       exerciseTracking,
@@ -2440,9 +2786,15 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
         name: splitName.trim() || "Custom Split",
         daySlots,
       },
+      sessionLengthPreference,
       equipment,
       unit,
       exercises: normalizedExercises,
+      exerciseAssignments: buildExerciseAssignments({
+        daySlots,
+        exercises: normalizedExercises,
+        sessionLengthPreference,
+      }),
       weeklyVolume: calcVolumeForWeek(resumeWeek, weeks),
       increments: normalizedIncrements,
       exerciseTracking,
@@ -2555,6 +2907,25 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
         </div>
       </div>
       <div className="stack">
+        <div className="label tiny gold">session length</div>
+        <div className="grid-3">
+          {SESSION_LENGTH_OPTIONS.map((option) => (
+            <button
+              key={option}
+              className={`pill-btn gold ${sessionLengthPreference === option ? "active" : ""}`}
+              onClick={() => setSessionLengthPreference(option)}
+            >
+              <span className="display" style={{ fontSize: 22 }}>
+                {option}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="tiny muted">
+          Short keeps sessions tighter. Balanced spreads work more evenly. Long allows fuller training days.
+        </div>
+      </div>
+      <div className="stack">
         <div className="label tiny gold">split preset</div>
         <div className="stack">
           {SPLIT_PRESETS.map((preset) => (
@@ -2634,6 +3005,9 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
           </div>
         </div>
       )}
+      <div className="card small muted">
+        HyperPhases will distribute each muscle group’s exercises across repeat training days to keep sessions productive without repeating everything every time.
+      </div>
       <button className="btn-primary" onClick={buildExerciseSelection}>
         {initialTemplate ? "Review Exercise Plan" : "Build Exercise Plan"}
       </button>
@@ -2660,6 +3034,9 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
             ? "Start from equipment-matched recommendations, then keep up to 3 exercises per muscle group."
             : "Match what you’ve been doing. Start from equipment-matched recommendations, then keep up to 3 exercises per muscle group."}
         </div>
+      </div>
+      <div className="card small muted">
+        Your {sessionLengthPreference} session preference will split these movements across the week so multi-frequency muscles do not overload every session.
       </div>
       {activeMuscles.map((muscle) => {
         const options = getAvailableExercises(muscle, equipment);
@@ -4361,49 +4738,151 @@ function SessionScreen({
 }) {
   const muscles = Object.keys(sessionState.log || {});
   const allDone = muscles.every((muscle) => isMuscleDone(sessionState, muscle));
-  const allRated = muscles.every((muscle) => isMuscleRated(sessionState, muscle));
+  const allRated = muscles.every((muscle) => isMuscleRated(sessionState, muscle, meso.week));
   const unitLabel = getUnitLabel(meso?.unit);
   const unitStep = getUnitStep(meso?.unit);
   const targetRIR = targetRIRForWeek(meso.week);
   const phaseGuide = getPhaseGuide(meso);
-  const completedMuscles = muscles.filter((muscle) => isMuscleDone(sessionState, muscle)).length;
+  const resolvedExercises = muscles.reduce(
+    (total, muscle) =>
+      total +
+      (sessionState.log[muscle] || []).filter((block) => isExerciseResolved(block)).length,
+    0
+  );
+  const totalExercises = muscles.reduce(
+    (total, muscle) => total + (sessionState.log[muscle] || []).length,
+    0
+  );
+  const showPerformanceFeedback = meso.week > 1;
 
   const updateSet = (muscle, exIdx, setIdx, field, value) => {
     setSessionState((current) => ({
       ...current,
+      dirty: true,
       log: {
         ...current.log,
-        [muscle]: current.log[muscle].map((block, blockIdx) =>
-          blockIdx === exIdx
-            ? {
-                ...block,
-                sets: block.sets.map((set, idx) => (idx === setIdx ? { ...set, [field]: value } : set)),
+        [muscle]: current.log[muscle].map((block, blockIdx) => {
+          if (blockIdx !== exIdx) return block;
+          const autoFlag = field === "weight" ? "weightAuto" : field === "reps" ? "repsAuto" : null;
+          const leadValue = block.sets[0]?.[field];
+          let nextSets = block.sets.map((set, idx) => {
+            if (idx !== setIdx) return set;
+            const nextSet = {
+              ...set,
+              [field]: value,
+              ...(field === "done" && value ? { skipped: false } : {}),
+              ...(field === "skipped" && value ? { done: false } : {}),
+            };
+            if (autoFlag && idx > 0) {
+              nextSet[autoFlag] = false;
+            }
+            if (autoFlag && idx === 0) {
+              nextSet[autoFlag] = false;
+            }
+            return nextSet;
+          });
+          if (autoFlag && setIdx === 0) {
+            nextSets = nextSets.map((set, idx) => {
+              if (idx === 0) return set;
+              const matchesLead =
+                leadValue != null && String(set[field] ?? "") === String(leadValue ?? "");
+              if (set[autoFlag] || set[field] === "" || set[field] == null || matchesLead) {
+                return {
+                  ...set,
+                  [field]: value,
+                  [autoFlag]: value !== "",
+                };
               }
-            : block
-        ),
+              return set;
+            });
+          }
+          return {
+            ...block,
+            sets: nextSets,
+          };
+        }),
       },
     }));
+  };
+
+  const getRepCoaching = (muscle, block) => {
+    const preset = getRecommendedRepRange(muscle, block.exercise);
+    const completedSet =
+      [...(block.sets || [])].reverse().find((set) => set.done) || block.sets?.[0] || null;
+    const repsValue = Number(completedSet?.reps);
+    const rirValue =
+      completedSet?.rir === "" || completedSet?.rir == null ? null : Number(completedSet.rir);
+    let tone = "neutral";
+    let detail = `${preset.min}-${preset.max} reps is the target lane here. ${preset.rationale}`;
+    if (!Number.isNaN(repsValue) && repsValue > 0 && repsValue < preset.min && rirValue != null && rirValue >= targetRIR) {
+      tone = "warn";
+      detail = `That is below the usual ${preset.min}-${preset.max} rep target while still leaving ${rirValue} RIR. The load is probably too heavy for hypertrophy focus.`;
+    } else if (
+      !Number.isNaN(repsValue) &&
+      repsValue > preset.max &&
+      rirValue != null &&
+      rirValue <= Math.max(0, targetRIR - 1)
+    ) {
+      tone = "good";
+      detail = `You are above the usual ${preset.min}-${preset.max} rep lane. If execution stays clean, it is reasonable to add a small amount of load next time.`;
+    }
+    return { preset, tone, detail };
+  };
+
+  const getBlockCompletionStats = (block) => {
+    const plannedSets = (block?.sets || []).length;
+    const completedSets = (block?.sets || []).filter((set) => set.done).length;
+    const skippedSets = block?.skipped
+      ? plannedSets
+      : (block?.sets || []).filter((set) => set.skipped).length;
+    return { plannedSets, completedSets, skippedSets };
   };
 
   const addSet = (muscle, exIdx) => {
     setSessionState((current) => ({
       ...current,
+      dirty: true,
+      log: {
+        ...current.log,
+        [muscle]: current.log[muscle].map((block, idx) => {
+          if (idx !== exIdx) return block;
+          const repPreset = getRecommendedRepRange(muscle, block.exercise);
+          const firstSet = block.sets[0] || {};
+          return {
+            ...block,
+            sets: [
+              ...block.sets,
+              {
+                id: Date.now() + Math.random(),
+                weight: firstSet.weight || "",
+                reps: firstSet.reps || repPreset.defaultReps,
+                rir: targetRIR,
+                done: false,
+                skipped: false,
+                weightAuto: Boolean(firstSet.weight),
+                repsAuto: true,
+              },
+            ],
+          };
+        }),
+      },
+    }));
+  };
+
+  const toggleSkip = (muscle, exIdx) => {
+    setSessionState((current) => ({
+      ...current,
+      dirty: true,
       log: {
         ...current.log,
         [muscle]: current.log[muscle].map((block, idx) =>
           idx === exIdx
             ? {
                 ...block,
-                sets: [
-                  ...block.sets,
-                  {
-                    id: Date.now() + Math.random(),
-                    weight: "",
-                    reps: 10,
-                    rir: targetRIR,
-                    done: false,
-                  },
-                ],
+                skipped: !block.skipped,
+                sets: block.skipped
+                  ? block.sets.map((set) => ({ ...set, skipped: false }))
+                  : block.sets.map((set) => ({ ...set, done: false, skipped: true })),
               }
             : block
         ),
@@ -4411,9 +4890,15 @@ function SessionScreen({
     }));
   };
 
+  const toggleSetSkip = (muscle, exIdx, setIdx) => {
+    const currentSet = sessionState.log[muscle]?.[exIdx]?.sets?.[setIdx];
+    updateSet(muscle, exIdx, setIdx, "skipped", !currentSet?.skipped);
+  };
+
   const updateFeedback = (muscle, field, value) => {
     setSessionState((current) => ({
       ...current,
+      dirty: true,
       feedback: {
         ...current.feedback,
         [muscle]: {
@@ -4427,6 +4912,7 @@ function SessionScreen({
   const updateExerciseNotes = (muscle, exIdx, notes) => {
     setSessionState((current) => ({
       ...current,
+      dirty: true,
       log: {
         ...current.log,
         [muscle]: current.log[muscle].map((block, idx) =>
@@ -4458,11 +4944,6 @@ function SessionScreen({
               <button className="btn-ghost" onClick={onBack}>
                 Back
               </button>
-              {allDone && allRated && (
-                <button className="btn-sm" onClick={onSave}>
-                  Save ✓
-                </button>
-              )}
             </div>
           </div>
         </div>
@@ -4477,26 +4958,41 @@ function SessionScreen({
             </div>
           </div>
           <div className="status-chip status-chip-good">
-            {completedMuscles}/{muscles.length} muscles complete
+            {resolvedExercises}/{totalExercises} exercises resolved
           </div>
         </div>
         <div className="small">
           {phaseGuide?.title}: {phaseGuide?.focus}
         </div>
         <div className="goal-track">
-          <div className="goal-fill" style={{ width: `${clamp((completedMuscles / Math.max(1, muscles.length)) * 100, 0, 100)}%` }} />
+          <div className="goal-fill" style={{ width: `${clamp((resolvedExercises / Math.max(1, totalExercises)) * 100, 0, 100)}%` }} />
+        </div>
+        <div className="session-guidance-grid">
+          <div className="session-guidance-item">
+            <div className="label tiny accent">Target RIR</div>
+            <div className="mono tiny">{targetRIR} on working sets this week</div>
+          </div>
+          <div className="session-guidance-item">
+            <div className="label tiny accent">Rep Strategy</div>
+            <div className="mono tiny">Stay near the suggested rep lane before chasing more load.</div>
+          </div>
+          <div className="session-guidance-item">
+            <div className="label tiny accent">Skip Rule</div>
+            <div className="mono tiny">Skip cleanly if needed. The workout will still save once every exercise is done or skipped.</div>
+          </div>
         </div>
       </div>
 
       {muscles.map((muscle) => {
-        const rated = isMuscleRated(sessionState, muscle);
+        const rated = isMuscleRated(sessionState, muscle, meso.week);
         const done = isMuscleDone(sessionState, muscle);
+        const trained = isMuscleTrained(sessionState, muscle);
         return (
           <div key={muscle} className="card stack">
             <div className="space-between" style={{ alignItems: "flex-start" }}>
               <div className="label tiny accent">{muscle}</div>
               <div className={`label tiny ${done && !rated ? "accent" : rated ? "gold" : "muted"}`}>
-                {rated ? "✓ Rated" : done ? "Rate now ↓" : ""}
+                {!trained && done ? "Skipped today" : rated ? "✓ Rated" : done ? "Rate now ↓" : ""}
               </div>
             </div>
             {(sessionState.log[muscle] || []).map((block, exIdx) => {
@@ -4506,10 +5002,14 @@ function SessionScreen({
                 block.exercise,
                 block.bodyweightMode
               );
+              const repGuide = getRepCoaching(muscle, block);
+              const completion = getBlockCompletionStats(block);
               return (
                 <div
                   key={`${muscle}-${block.exercise}-${exIdx}`}
-                  className={`exercise-block stack ${block.bodyweightMode ? "exercise-block-bodyweight" : ""}`}
+                  className={`exercise-block stack ${block.bodyweightMode ? "exercise-block-bodyweight" : ""} ${
+                    block.skipped ? "exercise-block-skipped" : ""
+                  }`}
                 >
                   <div className="exercise-header">
                     <div className="stack" style={{ gap: 6 }}>
@@ -4546,9 +5046,16 @@ function SessionScreen({
                         <span className="status-chip" style={getCoachToneStyles(progressionGuide.tone)}>
                           {progressionGuide.label}
                         </span>
+                        <span className="status-chip" style={getCoachToneStyles(repGuide.tone)}>
+                          {repGuide.preset.min}-{repGuide.preset.max} reps
+                        </span>
+                        {block.skipped && <span className="status-chip">Skipped</span>}
                       </div>
                     </div>
                     <div className="exercise-actions">
+                      <button className="btn-ghost" onClick={() => toggleSkip(muscle, exIdx)}>
+                        {block.skipped ? "unskip" : "skip today"}
+                      </button>
                       <button
                         className={`btn-ghost ${block.bodyweightMode ? "bodyweight-toggle-active" : ""}`}
                         onClick={() => onToggleBodyweight(muscle, exIdx, block.exercise, !block.bodyweightMode)}
@@ -4570,58 +5077,103 @@ function SessionScreen({
                     </div>
                   </div>
                   <div className="tiny muted">{progressionGuide.detail}</div>
-                  <div className="session-grid header">
-                    <div>#</div>
-                    <div>{block.bodyweightMode ? `ADD ${unitLabel.toUpperCase()}` : unitLabel.toUpperCase()}</div>
-                    <div>REPS</div>
-                    <div>RIR</div>
-                    <div>✓</div>
-                  </div>
-                  {block.sets.map((set, setIdx) => (
-                    <div key={set.id} className={`session-grid ${set.done ? "done" : "active"}`}>
-                      <div className="mono tiny gold">{setIdx + 1}</div>
-                      <input
-                        type="number"
-                        step={unitStep}
-                        value={set.weight}
-                        placeholder={block.bodyweightMode ? "optional" : ""}
-                        onChange={(event) => updateSet(muscle, exIdx, setIdx, "weight", event.target.value)}
-                      />
-                      <input
-                        type="number"
-                        value={set.reps}
-                        onChange={(event) => updateSet(muscle, exIdx, setIdx, "reps", Number(event.target.value))}
-                      />
-                      <select
-                        value={set.rir}
-                        onChange={(event) =>
-                          updateSet(
-                            muscle,
-                            exIdx,
-                            setIdx,
-                            "rir",
-                            event.target.value === "" ? "" : Number(event.target.value)
-                          )
-                        }
-                      >
-                        <option value="">-</option>
-                        {[0, 1, 2, 3, 4, 5].map((value) => (
-                          <option key={value} value={value}>
-                            {value}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        className={`done-btn ${set.done ? "active" : ""}`}
-                        onClick={() => updateSet(muscle, exIdx, setIdx, "done", !set.done)}
-                      >
-                        ✓
-                      </button>
+                  <div className="exercise-guidance">
+                    <div className="mono tiny">{repGuide.detail}</div>
+                    <div className="mono tiny muted">
+                      {completion.completedSets}/{completion.plannedSets} sets completed
+                      {completion.skippedSets ? ` · ${completion.skippedSets} skipped` : ""}
                     </div>
-                  ))}
-                  <button className="btn-ghost add-set-btn" onClick={() => addSet(muscle, exIdx)}>
-                    + add set
-                  </button>
+                    {block.sets[0]?.weightAuto || block.sets[0]?.repsAuto ? null : (
+                      <div className="mono tiny muted">
+                        Update set 1 and the remaining rows will mirror weight and reps until you change them individually.
+                      </div>
+                    )}
+                  </div>
+                  {block.skipped ? (
+                    <div className="exercise-skip-note">
+                      <div className="label tiny">Skipped for today</div>
+                      <div className="mono tiny muted">
+                        Use unskip if this movement opens up later. It will not block finishing the workout.
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="session-grid header">
+                        <div>#</div>
+                        <div>{block.bodyweightMode ? `ADD ${unitLabel.toUpperCase()}` : unitLabel.toUpperCase()}</div>
+                        <div>REPS</div>
+                        <div>RIR</div>
+                        <div>LOG</div>
+                      </div>
+                      {block.sets.map((set, setIdx) => (
+                        <div
+                          key={set.id}
+                          className={`session-grid ${set.done ? "done" : set.skipped ? "skipped" : "active"}`}
+                        >
+                          <div className="mono tiny gold">{setIdx + 1}</div>
+                          <input
+                            type="number"
+                            step={unitStep}
+                            value={set.weight}
+                            placeholder={block.bodyweightMode ? "optional" : ""}
+                            disabled={set.skipped}
+                            onChange={(event) => updateSet(muscle, exIdx, setIdx, "weight", event.target.value)}
+                          />
+                          <input
+                            type="number"
+                            value={set.reps}
+                            disabled={set.skipped}
+                            onChange={(event) =>
+                              updateSet(
+                                muscle,
+                                exIdx,
+                                setIdx,
+                                "reps",
+                                event.target.value === "" ? "" : Number(event.target.value)
+                              )
+                            }
+                          />
+                          <select
+                            value={set.rir}
+                            disabled={set.skipped}
+                            onChange={(event) =>
+                              updateSet(
+                                muscle,
+                                exIdx,
+                                setIdx,
+                                "rir",
+                                event.target.value === "" ? "" : Number(event.target.value)
+                              )
+                            }
+                          >
+                            <option value="">-</option>
+                            {[0, 1, 2, 3, 4, 5].map((value) => (
+                              <option key={value} value={value}>
+                                {value}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="set-actions">
+                            <button
+                              className={`done-btn ${set.done ? "active" : ""}`}
+                              onClick={() => updateSet(muscle, exIdx, setIdx, "done", !set.done)}
+                            >
+                              ✓
+                            </button>
+                            <button
+                              className={`skip-set-btn ${set.skipped ? "active" : ""}`}
+                              onClick={() => toggleSetSkip(muscle, exIdx, setIdx)}
+                            >
+                              skip
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      <button className="btn-ghost add-set-btn" onClick={() => addSet(muscle, exIdx)}>
+                        + add set
+                      </button>
+                    </>
+                  )}
                   <div className="stack" style={{ gap: 6 }}>
                     <div className="label tiny gold">exercise notes</div>
                     <textarea
@@ -4635,7 +5187,7 @@ function SessionScreen({
               );
             })}
 
-            {done && (
+            {done && trained && (
               <div className="feedback-card stack">
                 <div className="display gold" style={{ fontSize: 32, lineHeight: 0.92 }}>
                   How was {muscle}?
@@ -4648,19 +5200,21 @@ function SessionScreen({
                   onSelect={(value) => updateFeedback(muscle, "pump", value)}
                 />
                 <FeedbackGroup
-                  title="Soreness from last session"
+                  title="Soreness since you last trained this muscle"
                   field="soreness"
                   options={FEEDBACK_OPTIONS.soreness}
                   value={sessionState.feedback[muscle]?.soreness}
                   onSelect={(value) => updateFeedback(muscle, "soreness", value)}
                 />
-                <FeedbackGroup
-                  title="Performance vs last week"
-                  field="performance"
-                  options={FEEDBACK_OPTIONS.performance}
-                  value={sessionState.feedback[muscle]?.performance}
-                  onSelect={(value) => updateFeedback(muscle, "performance", value)}
-                />
+                {showPerformanceFeedback && (
+                  <FeedbackGroup
+                    title="Performance vs the last time you trained it"
+                    field="performance"
+                    options={FEEDBACK_OPTIONS.performance}
+                    value={sessionState.feedback[muscle]?.performance}
+                    onSelect={(value) => updateFeedback(muscle, "performance", value)}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -4676,20 +5230,28 @@ function SessionScreen({
             onChange={(event) =>
               setSessionState((current) => ({
                 ...current,
+                dirty: true,
                 notes: event.target.value,
               }))
             }
             placeholder="Overall context for this workout: energy, time pressure, equipment availability, unusual fatigue..."
           />
         </div>
+        <button className="btn-primary" onClick={onSave} disabled={!allDone || !allRated}>
+          Finish Workout
+        </button>
         {allDone && !allRated ? (
-          <div className="mono tiny muted">Rate all muscle groups above to finish.</div>
-        ) : allDone && allRated ? (
-          <button className="btn-primary" onClick={onSave}>
-            Save Session
-          </button>
+          <div className="mono tiny muted">
+            Rate each trained muscle above to finish the workout. Skipped movements do not need feedback.
+          </div>
+        ) : !allDone ? (
+          <div className="mono tiny muted">
+            Mark every programmed set as done or skip it, or skip the full exercise. Your draft is kept if you leave this screen.
+          </div>
         ) : (
-          <div className="mono tiny muted">Complete at least one done set for every exercise to finish the session.</div>
+          <div className="mono tiny muted">
+            Everything required is complete. Finish workout will save the session and return you home.
+          </div>
         )}
       </div>
     </div>

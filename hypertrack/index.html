@@ -883,6 +883,17 @@
         border-color: rgba(24, 166, 111, 0.16);
       }
 
+      .exercise-block-skipped {
+        background:
+          linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(242, 247, 250, 0.95)),
+          var(--surface2);
+        border-color: rgba(16, 40, 70, 0.1);
+      }
+
+      .exercise-block-skipped::before {
+        background: linear-gradient(180deg, rgba(148, 163, 184, 0.9), rgba(100, 116, 139, 0.86));
+      }
+
       .exercise-header {
         display: flex;
         align-items: center;
@@ -917,7 +928,7 @@
 
       .session-grid {
         display: grid;
-        grid-template-columns: 28px 1.2fr 1fr 1fr 38px;
+        grid-template-columns: 28px 1.15fr 0.9fr 0.9fr 76px;
         gap: 6px;
         align-items: center;
         padding: 6px 0;
@@ -935,6 +946,11 @@
         background: linear-gradient(90deg, rgba(24, 166, 111, 0.1), rgba(24, 166, 111, 0.03));
       }
 
+      .session-grid.skipped {
+        padding: 8px 8px 8px 0;
+        background: linear-gradient(90deg, rgba(148, 163, 184, 0.12), rgba(226, 232, 240, 0.2));
+      }
+
       .session-grid.header {
         color: var(--muted2);
         margin-bottom: 8px;
@@ -947,7 +963,7 @@
       }
 
       .done-btn {
-        width: 38px;
+        width: 36px;
         height: 42px;
         border-radius: 12px;
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(242, 247, 250, 0.86));
@@ -967,6 +983,32 @@
         color: var(--ok);
       }
 
+      .set-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .skip-set-btn {
+        flex: 1;
+        min-width: 36px;
+        height: 42px;
+        border-radius: 12px;
+        border: 1px solid rgba(100, 116, 139, 0.24);
+        background: rgba(248, 250, 252, 0.9);
+        color: var(--muted2);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 9px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .skip-set-btn.active {
+        border-color: rgba(100, 116, 139, 0.28);
+        background: rgba(226, 232, 240, 0.72);
+        color: #475569;
+      }
+
       .feedback-card {
         margin-top: 10px;
         padding: 15px;
@@ -978,6 +1020,37 @@
 
       .session-overview {
         gap: 10px;
+      }
+
+      .session-guidance-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .session-guidance-item {
+        border-radius: 16px;
+        padding: 12px;
+        border: 1px solid rgba(16, 40, 70, 0.08);
+        background: rgba(255, 255, 255, 0.7);
+      }
+
+      .exercise-guidance {
+        display: grid;
+        gap: 6px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(16, 40, 70, 0.06);
+        background: linear-gradient(180deg, rgba(246, 250, 252, 0.92), rgba(255, 255, 255, 0.78));
+      }
+
+      .exercise-skip-note {
+        display: grid;
+        gap: 4px;
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px dashed rgba(100, 116, 139, 0.28);
+        background: rgba(248, 250, 252, 0.82);
       }
 
       .add-set-btn {
@@ -1299,7 +1372,8 @@
         .hero-actions,
         .week-hero,
         .insight-grid,
-        .hero-metrics {
+        .hero-metrics,
+        .session-guidance-grid {
           grid-template-columns: 1fr;
           display: grid;
         }
@@ -1318,7 +1392,7 @@
         }
 
         .session-grid {
-          grid-template-columns: 24px 1.1fr 0.9fr 0.9fr 34px;
+          grid-template-columns: 24px 1.08fr 0.85fr 0.85fr 72px;
         }
 
         .volume-row {
@@ -1328,7 +1402,8 @@
 
       @media (max-width: 430px) {
         .public-feature-grid,
-        .public-preview-panel-grid {
+        .public-preview-panel-grid,
+        .session-guidance-grid {
           grid-template-columns: 1fr;
         }
 
