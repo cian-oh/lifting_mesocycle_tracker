@@ -538,12 +538,17 @@ function getRecommendedExercisePlanForSplit(equipment, daySlots, preference = "b
   );
 }
 
+function createAssignmentShell(daySlots) {
+  const slots = normalizeDaySlots(daySlots);
+  return Object.fromEntries(
+    slots.map((slot) => [slot.id, Object.fromEntries(MUSCLES.map((muscle) => [muscle, []]))])
+  );
+}
+
 function buildExerciseAssignments({ daySlots, exercises, sessionLengthPreference }) {
   const slots = normalizeDaySlots(daySlots);
   const cap = getSessionExerciseCap(sessionLengthPreference);
-  const assignments = Object.fromEntries(
-    slots.map((slot) => [slot.id, Object.fromEntries(MUSCLES.map((muscle) => [muscle, []]))])
-  );
+  const assignments = createAssignmentShell(slots);
 
   const getDayLoad = (slotId) =>
     Object.values(assignments[slotId] || {}).reduce((sum, list) => sum + (list?.length || 0), 0);
@@ -600,6 +605,51 @@ function buildExerciseAssignments({ daySlots, exercises, sessionLengthPreference
   return assignments;
 }
 
+function sanitizeExerciseAssignments({
+  daySlots,
+  exercises,
+  sessionLengthPreference,
+  exerciseAssignments,
+}) {
+  const slots = normalizeDaySlots(daySlots);
+  const sanitized = createAssignmentShell(slots);
+  const recommended = buildExerciseAssignments({
+    daySlots: slots,
+    exercises,
+    sessionLengthPreference,
+  });
+
+  MUSCLES.forEach((muscle) => {
+    const selected = Array.from(new Set((exercises?.[muscle] || []).slice(0, 3)));
+    const selectedSet = new Set(selected);
+    const muscleSlots = slots.filter((slot) => slot.muscles.includes(muscle));
+    if (!muscleSlots.length || !selected.length) return;
+
+    muscleSlots.forEach((slot) => {
+      const current = (exerciseAssignments?.[slot.id]?.[muscle] || []).filter((exercise) =>
+        selectedSet.has(exercise)
+      );
+      sanitized[slot.id][muscle] = Array.from(new Set(current));
+    });
+
+    selected.forEach((exercise) => {
+      const assignedSomewhere = muscleSlots.some((slot) =>
+        sanitized[slot.id][muscle].includes(exercise)
+      );
+      if (assignedSomewhere) return;
+      const recommendedSlot =
+        muscleSlots.find((slot) => (recommended?.[slot.id]?.[muscle] || []).includes(exercise)) ||
+        muscleSlots[0];
+      sanitized[recommendedSlot.id][muscle] = [
+        ...sanitized[recommendedSlot.id][muscle],
+        exercise,
+      ];
+    });
+  });
+
+  return sanitized;
+}
+
 function getAssignedExercisesForDay(meso, daySlotId, muscle) {
   const assigned = meso?.exerciseAssignments?.[daySlotId]?.[muscle];
   if (assigned?.length) return assigned;
@@ -614,12 +664,67 @@ function ensureMesoPlanning(meso, fallbackPreference = "balanced") {
   return {
     ...meso,
     sessionLengthPreference: preference,
-    exerciseAssignments: buildExerciseAssignments({
+    exerciseAssignments: sanitizeExerciseAssignments({
       daySlots: getMesoDaySlots(meso),
       exercises: meso.exercises || {},
       sessionLengthPreference: preference,
+      exerciseAssignments: meso.exerciseAssignments || {},
     }),
   };
+}
+
+function countExerciseAssignments(daySlots, exerciseAssignments, muscle, exerciseName) {
+  return normalizeDaySlots(daySlots).reduce((total, slot) => {
+    const assigned = exerciseAssignments?.[slot.id]?.[muscle] || [];
+    return total + (assigned.includes(exerciseName) ? 1 : 0);
+  }, 0);
+}
+
+function getExerciseSetPlanForMuscle(meso, muscle) {
+  const slots = getMesoDaySlots(meso).filter((slot) => slot.muscles.includes(muscle));
+  const entries = [];
+  slots.forEach((slot) => {
+    const assigned = getAssignedExercisesForDay(meso, slot.id, muscle);
+    assigned.forEach((exercise) => {
+      entries.push({ slotId: slot.id, exercise });
+    });
+  });
+  if (!entries.length) return {};
+  const weeklyTarget = Math.max(0, Number(meso?.weeklyVolume?.[muscle]) || MEV_MRV[muscle][0]);
+  const minimumSets = weeklyTarget >= entries.length * 2 ? 2 : 1;
+  const sets = Array.from({ length: entries.length }).map(() => minimumSets);
+  let remaining = Math.max(0, weeklyTarget - minimumSets * entries.length);
+  let cursor = 0;
+  while (remaining > 0) {
+    sets[cursor % sets.length] += 1;
+    remaining -= 1;
+    cursor += 1;
+  }
+  return entries.reduce((accumulator, entry, index) => {
+    accumulator[entry.slotId] = accumulator[entry.slotId] || {};
+    accumulator[entry.slotId][entry.exercise] = sets[index];
+    return accumulator;
+  }, {});
+}
+
+function getPlannedSetsForDayExercise(meso, daySlotId, muscle, exerciseName) {
+  return getExerciseSetPlanForMuscle(meso, muscle)?.[daySlotId]?.[exerciseName] || 0;
+}
+
+function getPlannedSetsForDay(meso, daySlotId) {
+  const slot = getSlotById(meso, daySlotId);
+  if (!slot) return 0;
+  return slot.muscles.reduce((total, muscle) => {
+    const assigned = getAssignedExercisesForDay(meso, daySlotId, muscle);
+    return (
+      total +
+      assigned.reduce(
+        (muscleTotal, exercise) =>
+          muscleTotal + getPlannedSetsForDayExercise(meso, daySlotId, muscle, exercise),
+        0
+      )
+    );
+  }, 0);
 }
 
 function getRepPreset(muscle, exerciseName) {
@@ -1017,8 +1122,11 @@ function buildSessionState(meso, daySlotId, cloudUser) {
   muscles.forEach((muscle) => {
     const selected = getAssignedExercisesForDay(meso, daySlotId, muscle);
     if (!selected.length) return;
-    const setsPerExercise = Math.max(2, Math.round((meso.weeklyVolume[muscle] || MEV_MRV[muscle][0]) / Math.max(1, selected.length)));
     log[muscle] = selected.map((exercise) => {
+      const setsPerExercise = Math.max(
+        1,
+        getPlannedSetsForDayExercise(meso, daySlotId, muscle, exercise) || 0
+      );
       const increment = meso.increments[exercise] || DEFAULT_INCREMENT;
       const bodyweightMode = getExerciseTracking(meso, exercise).bodyweight;
       const repPreset = getRecommendedRepRange(muscle, exercise);
@@ -2203,6 +2311,41 @@ function App() {
     [meso, persistMeso]
   );
 
+  const handleSavePlanConfiguration = useCallback(
+    async ({ exercises: nextExercisesInput, exerciseAssignments: nextAssignmentsInput }) => {
+      if (!meso) return;
+      const { normalizedExercises, normalizedIncrements } = normalizeExercisesAndIncrements(
+        nextExercisesInput,
+        meso.increments
+      );
+      const exerciseTracking = {
+        ...(meso.exerciseTracking || {}),
+      };
+      Object.values(normalizedExercises)
+        .flat()
+        .forEach((exercise) => {
+          if (!exerciseTracking[exercise]) {
+            exerciseTracking[exercise] = {
+              bodyweight: isBodyweightExercise(exercise),
+            };
+          }
+        });
+      const nextMeso = ensureMesoPlanning(
+        {
+          ...meso,
+          exercises: normalizedExercises,
+          increments: normalizedIncrements,
+          exerciseTracking,
+          exerciseAssignments: nextAssignmentsInput,
+        },
+        meso.sessionLengthPreference || "short"
+      );
+      await persistMeso(nextMeso);
+      setToast("Plan updated");
+    },
+    [meso, persistMeso]
+  );
+
   return (
     <div className="app-shell">
       {screen === "loading" && <LoadingScreen />}
@@ -2328,8 +2471,7 @@ function App() {
         <ManageExercisesSheet
           meso={meso}
           onClose={() => setManageExercisesOpen(false)}
-          onAdd={handleAddExercise}
-          onRemove={handleRemoveExercise}
+          onSavePlan={handleSavePlanConfiguration}
         />
       )}
       {archiveOpen && (
@@ -2513,6 +2655,112 @@ function WelcomeScreen({
   );
 }
 
+function PlanAssignmentEditor({
+  daySlots,
+  exercises,
+  weeklyVolume,
+  exerciseAssignments,
+  onToggleAssignment,
+  onResetAssignments,
+  title = "Weekly Layout",
+  subtitle = "Choose which exercises land on each day and see the expected set load before you start.",
+}) {
+  const previewMeso = {
+    split: { daySlots },
+    exercises,
+    weeklyVolume,
+    exerciseAssignments,
+  };
+  const normalizedDaySlots = normalizeDaySlots(daySlots);
+
+  return (
+    <div className="card stack">
+      <div className="title-row">
+        <div>
+          <div className="eyebrow">Plan Layout</div>
+          <div className="display" style={{ fontSize: 36, lineHeight: 0.94 }}>
+            {title}
+          </div>
+        </div>
+        {onResetAssignments ? (
+          <button className="btn-ghost" onClick={onResetAssignments}>
+            Reset Layout
+          </button>
+        ) : null}
+      </div>
+      <div className="small muted">{subtitle}</div>
+      <div className="assignment-day-grid">
+        {normalizedDaySlots.map((slot) => {
+          const plannedSets = getPlannedSetsForDay(previewMeso, slot.id);
+          return (
+            <div key={slot.id} className="assignment-day-card stack">
+              <div className="title-row">
+                <div>
+                  <div className="display" style={{ fontSize: 30, lineHeight: 0.96 }}>
+                    {slot.label}
+                  </div>
+                  <div className="tiny muted">{slot.muscles.join(" · ")}</div>
+                </div>
+                <div className="status-chip status-chip-good">{plannedSets} planned sets</div>
+              </div>
+              {slot.muscles.map((muscle) => {
+                const selected = exercises[muscle] || [];
+                if (!selected.length) return null;
+                const assigned = getAssignedExercisesForDay(previewMeso, slot.id, muscle);
+                return (
+                  <div key={`${slot.id}-${muscle}`} className="assignment-muscle-card">
+                    <div className="title-row" style={{ marginBottom: 8 }}>
+                      <div className="label tiny accent">{muscle}</div>
+                      <div className="mono tiny gold">
+                        {assigned.reduce(
+                          (total, exercise) =>
+                            total +
+                            getPlannedSetsForDayExercise(previewMeso, slot.id, muscle, exercise),
+                          0
+                        )}{" "}
+                        sets
+                      </div>
+                    </div>
+                    <div className="assignment-chip-wrap">
+                      {selected.map((exercise) => {
+                        const active = assigned.includes(exercise);
+                        const setsForExercise = getPlannedSetsForDayExercise(
+                          previewMeso,
+                          slot.id,
+                          muscle,
+                          exercise
+                        );
+                        return (
+                          <button
+                            key={`${slot.id}-${muscle}-${exercise}`}
+                            className={`assignment-chip ${active ? "active" : ""}`}
+                            onClick={() => onToggleAssignment?.(slot.id, muscle, exercise)}
+                            disabled={!onToggleAssignment}
+                          >
+                            <span>{exercise}</span>
+                            <span className="assignment-chip-meta">
+                              {active ? `${setsForExercise} sets` : "off"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {!assigned.length ? (
+                      <div className="tiny muted">
+                        No {muscle.toLowerCase()} work assigned on this day.
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SetupScreen({ initialTemplate, onComplete, onCancel }) {
   const [mode, setMode] = useState("choose");
   const [step, setStep] = useState(0);
@@ -2551,10 +2799,24 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
   const [splitName, setSplitName] = useState(SPLIT_PRESETS[0].name);
   const [splitDays, setSplitDays] = useState(() => instantiatePreset(SPLIT_PRESETS[0].key).daySlots);
   const [exerciseDrafts, setExerciseDrafts] = useState({});
+  const [exerciseAssignmentsDraft, setExerciseAssignmentsDraft] = useState(() =>
+    buildExerciseAssignments({
+      daySlots: instantiatePreset(SPLIT_PRESETS[0].key).daySlots,
+      exercises: getRecommendedExercisePlanForSplit(
+        DEFAULT_EQUIPMENT,
+        instantiatePreset(SPLIT_PRESETS[0].key).daySlots,
+        "balanced"
+      ),
+      sessionLengthPreference: "balanced",
+    })
+  );
   const normalizedSplitDays = normalizeDaySlots(splitDays);
+  const normalizedSplitDaysKey = JSON.stringify(normalizedSplitDays);
   const activeMuscles = getActiveMusclesFromSlots(normalizedSplitDays);
   const unitLabel = getUnitLabel(unit);
   const unitStep = getUnitStep(unit);
+  const previewWeeklyVolume =
+    mode === "resume" ? calcVolumeForWeek(resumeWeek, weeks) : weeklyVol;
 
   const visualStep =
     mode === "fresh"
@@ -2578,6 +2840,17 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
   useEffect(() => {
     setWeightStep((prev) => clamp(prev, 0, Math.max(0, activeMuscles.length - 1)));
   }, [activeMuscles.length]);
+
+  useEffect(() => {
+    setExerciseAssignmentsDraft((current) =>
+      sanitizeExerciseAssignments({
+        daySlots: normalizedSplitDays,
+        exercises,
+        sessionLengthPreference,
+        exerciseAssignments: current,
+      })
+    );
+  }, [exercises, normalizedSplitDaysKey, sessionLengthPreference]);
 
   useEffect(() => {
     if (!initialTemplate) return;
@@ -2613,6 +2886,17 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
     setWeightStep(0);
     setDoneWeeks([]);
     setExerciseDrafts({});
+    setExerciseAssignmentsDraft(
+      sanitizeExerciseAssignments({
+        daySlots: templateDaySlots,
+        exercises: templateExercises,
+        sessionLengthPreference:
+          SESSION_LENGTH_OPTIONS.includes(initialTemplate.sessionLengthPreference)
+            ? initialTemplate.sessionLengthPreference
+            : "balanced",
+        exerciseAssignments: initialTemplate.exerciseAssignments || {},
+      })
+    );
   }, [initialTemplate]);
 
   const applyPresetSelection = (presetKey) => {
@@ -2707,6 +2991,38 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
     setExerciseDrafts((current) => ({ ...current, [muscle]: "" }));
   };
 
+  const toggleExerciseAssignment = (daySlotId, muscle, exercise) => {
+    setExerciseAssignmentsDraft((current) => {
+      const assigned = current?.[daySlotId]?.[muscle] || [];
+      const isActive = assigned.includes(exercise);
+      if (
+        isActive &&
+        countExerciseAssignments(normalizedSplitDays, current, muscle, exercise) <= 1
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        [daySlotId]: {
+          ...(current?.[daySlotId] || {}),
+          [muscle]: isActive
+            ? assigned.filter((item) => item !== exercise)
+            : [...assigned, exercise],
+        },
+      };
+    });
+  };
+
+  const resetExerciseAssignments = () => {
+    setExerciseAssignmentsDraft(
+      buildExerciseAssignments({
+        daySlots: normalizedSplitDays,
+        exercises,
+        sessionLengthPreference,
+      })
+    );
+  };
+
   const createFreshMeso = async () => {
     const { normalizedExercises, normalizedIncrements } = normalizeExercisesAndIncrements(
       exercises,
@@ -2741,10 +3057,11 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
       equipment,
       unit,
       exercises: normalizedExercises,
-      exerciseAssignments: buildExerciseAssignments({
+      exerciseAssignments: sanitizeExerciseAssignments({
         daySlots,
         exercises: normalizedExercises,
         sessionLengthPreference,
+        exerciseAssignments: exerciseAssignmentsDraft,
       }),
       weeklyVolume: weeklyVol,
       increments: normalizedIncrements,
@@ -2790,10 +3107,11 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
       equipment,
       unit,
       exercises: normalizedExercises,
-      exerciseAssignments: buildExerciseAssignments({
+      exerciseAssignments: sanitizeExerciseAssignments({
         daySlots,
         exercises: normalizedExercises,
         sessionLengthPreference,
+        exerciseAssignments: exerciseAssignmentsDraft,
       }),
       weeklyVolume: calcVolumeForWeek(resumeWeek, weeks),
       increments: normalizedIncrements,
@@ -3134,6 +3452,20 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
           </div>
         );
       })}
+      <PlanAssignmentEditor
+        daySlots={normalizedSplitDays}
+        exercises={exercises}
+        weeklyVolume={previewWeeklyVolume}
+        exerciseAssignments={exerciseAssignmentsDraft}
+        onToggleAssignment={toggleExerciseAssignment}
+        onResetAssignments={resetExerciseAssignments}
+        title={mode === "resume" ? "Dial In Each Future Day" : "Dial In Each Day"}
+        subtitle={
+          mode === "resume"
+            ? "Bias more shoulders into push, swap chest movements across the week, and preview the resumed week before you continue."
+            : "Bias more shoulders into push, swap chest movements across the week, and see the current week-one set split before you start."
+        }
+      />
       {mode === "fresh" ? (
         <button className="btn-primary" onClick={() => setStep(3)}>
           Confirm Exercises
@@ -3212,6 +3544,20 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
           </div>
         );
       })}
+      <PlanAssignmentEditor
+        daySlots={normalizedSplitDays}
+        exercises={exercises}
+        weeklyVolume={previewWeeklyVolume}
+        exerciseAssignments={exerciseAssignmentsDraft}
+        onToggleAssignment={toggleExerciseAssignment}
+        onResetAssignments={resetExerciseAssignments}
+        title={mode === "resume" ? "Current Week Preview" : "Week One Preview"}
+        subtitle={
+          mode === "resume"
+            ? "This is the expected set layout for the resumed week. Adjust days here if a session feels too chest-heavy or you want a different emphasis."
+            : "This is the expected set layout for the week based on your current volume selections. Adjust days here if a session feels too chest-heavy or you want a different emphasis."
+        }
+      />
       <button className="btn-primary" onClick={createFreshMeso}>
         Start Mesocycle
       </button>
@@ -3666,11 +4012,47 @@ function HomeScreen({
             </div>
           </div>
 
+          <div className="card stack section-card analytics-card">
+            <div className="title-row">
+              <div>
+                <div className="eyebrow">Progression Engine</div>
+                <div className="display" style={{ fontSize: 38, lineHeight: 0.92 }}>
+                  How Weight Selection Moves
+                </div>
+              </div>
+              <div className="status-chip status-chip-good">Week {meso.week} target: {targetRIRForWeek(meso.week)} RIR</div>
+            </div>
+            <div className="assignment-day-grid">
+              <div className="assignment-day-card stack">
+                <div className="label tiny accent">1. Match Effort</div>
+                <div className="small">
+                  Start in the suggested rep lane and hit the week’s RIR target honestly. Early weeks stay further from failure so technique and baselines stay clean.
+                </div>
+              </div>
+              <div className="assignment-day-card stack">
+                <div className="label tiny accent">2. Earn Load</div>
+                <div className="small">
+                  If the last completed set was easier than target, the next recommendation rises. If it was harder than target, the app holds or trims load slightly.
+                </div>
+              </div>
+              <div className="assignment-day-card stack">
+                <div className="label tiny accent">3. Grow Volume Carefully</div>
+                <div className="small">
+                  Great recovery and low soreness let weekly sets climb. Missed work, poor recovery, or heavy soreness slow that ramp so progress stays sustainable.
+                </div>
+              </div>
+            </div>
+            <div className="tiny muted">
+              The goal is repeatable progress, not random heroic sets. Beat the plan cleanly and the app gives you more. Struggle early and it protects the next week.
+            </div>
+          </div>
+
           <div className="grid-2">
             {daySlots.map((daySlot) => {
               const muscles = daySlot.muscles;
               const done = doneDayTypes.includes(daySlot.id);
               const hasExercises = muscles.some((muscle) => (meso.exercises[muscle] || []).length > 0);
+              const plannedSets = getPlannedSetsForDay(meso, daySlot.id);
               return (
                 <div
                   key={daySlot.id}
@@ -3686,6 +4068,11 @@ function HomeScreen({
                   <div className="mono tiny muted" style={{ marginTop: 8 }}>
                     {hasExercises ? muscles.join(" · ") : "No exercises configured"}
                   </div>
+                  {hasExercises ? (
+                    <div className="mono tiny gold" style={{ marginTop: 8 }}>
+                      {plannedSets} planned sets
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
@@ -5400,21 +5787,110 @@ function IncrementModal({ current, exerciseName, unit, onClose, onSave }) {
   );
 }
 
-function ManageExercisesSheet({ meso, onClose, onAdd, onRemove }) {
-  const activeMuscles = getActiveMusclesFromSlots(getMesoDaySlots(meso));
+function ManageExercisesSheet({ meso, onClose, onSavePlan }) {
+  const daySlots = getMesoDaySlots(meso);
+  const daySlotsKey = JSON.stringify(daySlots);
+  const activeMuscles = getActiveMusclesFromSlots(daySlots);
   const [drafts, setDrafts] = useState({});
+  const [localExercises, setLocalExercises] = useState(() =>
+    Object.fromEntries(MUSCLES.map((muscle) => [muscle, [...(meso.exercises[muscle] || [])]]))
+  );
+  const [localAssignments, setLocalAssignments] = useState(() =>
+    sanitizeExerciseAssignments({
+      daySlots,
+      exercises: meso.exercises,
+      sessionLengthPreference: meso.sessionLengthPreference || "balanced",
+      exerciseAssignments: meso.exerciseAssignments || {},
+    })
+  );
+
+  useEffect(() => {
+    setLocalExercises(
+      Object.fromEntries(MUSCLES.map((muscle) => [muscle, [...(meso.exercises[muscle] || [])]]))
+    );
+    setLocalAssignments(
+      sanitizeExerciseAssignments({
+        daySlots,
+        exercises: meso.exercises,
+        sessionLengthPreference: meso.sessionLengthPreference || "balanced",
+        exerciseAssignments: meso.exerciseAssignments || {},
+      })
+    );
+  }, [daySlotsKey, meso.exerciseAssignments, meso.exercises, meso.sessionLengthPreference]);
+
+  useEffect(() => {
+    setLocalAssignments((current) =>
+      sanitizeExerciseAssignments({
+        daySlots,
+        exercises: localExercises,
+        sessionLengthPreference: meso.sessionLengthPreference || "balanced",
+        exerciseAssignments: current,
+      })
+    );
+  }, [daySlotsKey, localExercises, meso.sessionLengthPreference]);
 
   const updateDraft = (muscle, value) => {
     setDrafts((current) => ({ ...current, [muscle]: value }));
   };
 
-  const handleAdd = async (muscle) => {
+  const handleAdd = (muscle) => {
     const draft = normalizeExerciseName(drafts[muscle]);
     if (!draft) return;
-    const added = await onAdd(muscle, draft);
-    if (added) {
-      setDrafts((current) => ({ ...current, [muscle]: "" }));
-    }
+    const canonical =
+      getAllExerciseOptions(muscle).find((item) => item.toLowerCase() === draft.toLowerCase()) || draft;
+    setLocalExercises((current) => {
+      const existing = current[muscle] || [];
+      if (existing.length >= 3 || existing.includes(canonical)) return current;
+      return {
+        ...current,
+        [muscle]: [...existing, canonical],
+      };
+    });
+    setDrafts((current) => ({ ...current, [muscle]: "" }));
+  };
+
+  const handleRemove = (muscle, exerciseName) => {
+    setLocalExercises((current) => ({
+      ...current,
+      [muscle]: (current[muscle] || []).filter((exercise) => exercise !== exerciseName),
+    }));
+  };
+
+  const toggleAssignment = (daySlotId, muscle, exercise) => {
+    setLocalAssignments((current) => {
+      const assigned = current?.[daySlotId]?.[muscle] || [];
+      const isActive = assigned.includes(exercise);
+      if (isActive && countExerciseAssignments(daySlots, current, muscle, exercise) <= 1) {
+        return current;
+      }
+      return {
+        ...current,
+        [daySlotId]: {
+          ...(current?.[daySlotId] || {}),
+          [muscle]: isActive
+            ? assigned.filter((item) => item !== exercise)
+            : [...assigned, exercise],
+        },
+      };
+    });
+  };
+
+  const resetAssignments = () => {
+    setLocalAssignments(
+      buildExerciseAssignments({
+        daySlots,
+        exercises: localExercises,
+        sessionLengthPreference: meso.sessionLengthPreference || "balanced",
+      })
+    );
+  };
+
+  const handleSave = async () => {
+    await onSavePlan({
+      exercises: localExercises,
+      exerciseAssignments: localAssignments,
+    });
+    onClose();
   };
 
   return (
@@ -5432,13 +5908,13 @@ function ManageExercisesSheet({ meso, onClose, onAdd, onRemove }) {
           </button>
         </div>
         <div className="small muted">
-          Add or remove movements for future sessions. Existing logs stay intact, and exercises added mid-block start fresh from their next appearance in the mesocycle.
+          Add, remove, and re-place movements for future sessions. Completed workouts stay intact. The next unlogged day will follow whatever layout you save here.
         </div>
         {activeMuscles.map((muscle) => (
           <div key={muscle} className="card stack">
             <div className="title-row">
               <div className="display" style={{ fontSize: 28 }}>{muscle}</div>
-              <div className="mono tiny gold">{(meso.exercises[muscle] || []).length}/3 active</div>
+              <div className="mono tiny gold">{(localExercises[muscle] || []).length}/3 active</div>
             </div>
             <div className="inset stack" style={{ padding: 12 }}>
               <div className="label tiny gold">add exercise</div>
@@ -5466,18 +5942,18 @@ function ManageExercisesSheet({ meso, onClose, onAdd, onRemove }) {
                 <div className="tiny muted">Pick from the dropdown or type your own movement.</div>
                 <button
                   className="btn-ghost"
-                  disabled={(meso.exercises[muscle] || []).length >= 3 || !normalizeExerciseName(drafts[muscle])}
+                  disabled={(localExercises[muscle] || []).length >= 3 || !normalizeExerciseName(drafts[muscle])}
                   onClick={() => handleAdd(muscle)}
                 >
                   Add
                 </button>
               </div>
             </div>
-            {(meso.exercises[muscle] || []).length ? (
-              (meso.exercises[muscle] || []).map((exercise) => (
+            {(localExercises[muscle] || []).length ? (
+              (localExercises[muscle] || []).map((exercise) => (
                 <div key={`${muscle}-${exercise}`} className="title-row">
                   <div className="small">{exercise}</div>
-                  <button className="btn-ghost" onClick={() => onRemove(muscle, exercise)}>
+                  <button className="btn-ghost" onClick={() => handleRemove(muscle, exercise)}>
                     Remove
                   </button>
                 </div>
@@ -5487,6 +5963,19 @@ function ManageExercisesSheet({ meso, onClose, onAdd, onRemove }) {
             )}
           </div>
         ))}
+        <PlanAssignmentEditor
+          daySlots={daySlots}
+          exercises={localExercises}
+          weeklyVolume={meso.weeklyVolume}
+          exerciseAssignments={localAssignments}
+          onToggleAssignment={toggleAssignment}
+          onResetAssignments={resetAssignments}
+          title="Future Session Layout"
+          subtitle="Use this to bias specific muscles on specific days. Logged sessions remain unchanged; only future sessions will follow this layout."
+        />
+        <button className="btn-primary" onClick={handleSave}>
+          Save Plan Changes
+        </button>
       </div>
     </div>
   );
