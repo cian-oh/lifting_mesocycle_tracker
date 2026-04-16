@@ -797,6 +797,20 @@ function clearSessionDraft({ userId, mesoId, week, daySlotId }) {
   }
 }
 
+function clearMesoSessionDrafts({ userId, mesoId }) {
+  if (!userId || !mesoId) return;
+  try {
+    const prefix = `${SESSION_DRAFT_PREFIX}_${userId}_${mesoId}_`;
+    Object.keys(localStorage).forEach((key) => {
+      if (key.startsWith(prefix)) {
+        localStorage.removeItem(key);
+      }
+    });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 function isExerciseResolved(block) {
   return (
     Boolean(block?.skipped) ||
@@ -2340,10 +2354,14 @@ function App() {
         },
         meso.sessionLengthPreference || "short"
       );
+      clearMesoSessionDrafts({
+        userId: cloudUser?.id,
+        mesoId: meso.remoteId || meso.id,
+      });
       await persistMeso(nextMeso);
       setToast("Plan updated");
     },
-    [meso, persistMeso]
+    [cloudUser, meso, persistMeso]
   );
 
   return (
@@ -5903,9 +5921,14 @@ function ManageExercisesSheet({ meso, onClose, onSavePlan }) {
               Manage Plan
             </div>
           </div>
-          <button className="btn-ghost" onClick={onClose}>
-            Close
-          </button>
+          <div className="row">
+            <button className="btn-primary btn-sm" onClick={handleSave}>
+              Save Plan Changes
+            </button>
+            <button className="btn-ghost" onClick={onClose}>
+              Close
+            </button>
+          </div>
         </div>
         <div className="small muted">
           Add, remove, and re-place movements for future sessions. Completed workouts stay intact. The next unlogged day will follow whatever layout you save here.
