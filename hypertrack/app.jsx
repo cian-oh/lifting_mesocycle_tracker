@@ -5910,6 +5910,16 @@ function ManageExercisesSheet({ meso, onClose, onSavePlan }) {
         <div className="small muted">
           Add, remove, and re-place movements for future sessions. Completed workouts stay intact. The next unlogged day will follow whatever layout you save here.
         </div>
+        <PlanAssignmentEditor
+          daySlots={daySlots}
+          exercises={localExercises}
+          weeklyVolume={meso.weeklyVolume}
+          exerciseAssignments={localAssignments}
+          onToggleAssignment={toggleAssignment}
+          onResetAssignments={resetAssignments}
+          title="Future Session Layout"
+          subtitle="Use this first to bias specific muscles on specific days. Logged sessions remain unchanged; only future sessions will follow this layout."
+        />
         {activeMuscles.map((muscle) => (
           <div key={muscle} className="card stack">
             <div className="title-row">
@@ -5963,16 +5973,6 @@ function ManageExercisesSheet({ meso, onClose, onSavePlan }) {
             )}
           </div>
         ))}
-        <PlanAssignmentEditor
-          daySlots={daySlots}
-          exercises={localExercises}
-          weeklyVolume={meso.weeklyVolume}
-          exerciseAssignments={localAssignments}
-          onToggleAssignment={toggleAssignment}
-          onResetAssignments={resetAssignments}
-          title="Future Session Layout"
-          subtitle="Use this to bias specific muscles on specific days. Logged sessions remain unchanged; only future sessions will follow this layout."
-        />
         <button className="btn-primary" onClick={handleSave}>
           Save Plan Changes
         </button>
