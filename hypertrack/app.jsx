@@ -661,6 +661,7 @@ function ensureMesoPlanning(meso, fallbackPreference = "balanced") {
   const preference = SESSION_LENGTH_OPTIONS.includes(meso.sessionLengthPreference)
     ? meso.sessionLengthPreference
     : fallbackPreference;
+  const weeklyVolumeHistory = ensureWeeklyVolumeHistory(meso);
   return {
     ...meso,
     sessionLengthPreference: preference,
@@ -670,6 +671,9 @@ function ensureMesoPlanning(meso, fallbackPreference = "balanced") {
       sessionLengthPreference: preference,
       exerciseAssignments: meso.exerciseAssignments || {},
     }),
+    weeklyVolumeHistory,
+    volumeReviewHistory: Array.isArray(meso.volumeReviewHistory) ? meso.volumeReviewHistory : [],
+    latestVolumeReview: meso.latestVolumeReview || null,
   };
 }
 
@@ -1229,30 +1233,155 @@ function getNextOpenDaySlot(meso) {
   return getMesoDaySlots(meso).find((slot) => !doneSlotIds.includes(slot.id)) || null;
 }
 
-function advanceWeekIfNeeded(meso) {
-  const doneThisWeek = getWeekDoneDaySlotIds(meso, meso.week);
-  if (doneThisWeek.length === getMesoDaySlots(meso).length) {
-    return { ...meso, week: Math.min(meso.week + 1, meso.totalWeeks + 1) };
-  }
-  return meso;
+function cloneWeeklyVolume(volume) {
+  return Object.fromEntries(
+    MUSCLES.map((muscle) => [muscle, Number(volume?.[muscle]) || MEV_MRV[muscle][0]])
+  );
 }
 
-function applyVolumeProgression(meso, sessionState) {
-  const nextVolume = { ...meso.weeklyVolume };
-  Object.keys(sessionState.log || {}).forEach((muscle) => {
-    if (!isMuscleTrained(sessionState, muscle)) return;
-    const feedback = sessionState.feedback[muscle] || {};
-    const completion = getMuscleCompletionStats(sessionState, muscle);
-    let delta = 2;
-    if ((feedback.pump ?? 0) <= 1) delta = 3;
-    if ((feedback.soreness ?? 0) >= 3) delta = -2;
-    else if ((feedback.soreness ?? 0) >= 2) delta = Math.min(delta, 0);
-    if (completion.completionRatio < 0.5) delta = Math.min(delta, -2);
-    else if (completion.completionRatio < 0.85) delta = Math.min(delta, 0);
-    const [mev, mrv] = MEV_MRV[muscle];
-    nextVolume[muscle] = clamp((nextVolume[muscle] || mev) + delta, mev, mrv);
+function upsertWeeklyVolumeSnapshot(history, week, volume) {
+  const snapshots = Array.isArray(history) ? [...history] : [];
+  const snapshot = { week, volume: cloneWeeklyVolume(volume) };
+  const existingIndex = snapshots.findIndex((item) => item.week === week);
+  if (existingIndex >= 0) {
+    snapshots[existingIndex] = snapshot;
+  } else {
+    snapshots.push(snapshot);
+  }
+  return snapshots.sort((a, b) => a.week - b.week);
+}
+
+function ensureWeeklyVolumeHistory(meso) {
+  const currentWeek = clamp(Math.min(meso?.week || 1, meso?.totalWeeks || 1), 1, Math.max(1, meso?.totalWeeks || 1));
+  const existing = Array.isArray(meso?.weeklyVolumeHistory) ? meso.weeklyVolumeHistory : [];
+  const normalized = existing
+    .filter((item) => item && Number(item.week) > 0)
+    .reduce(
+      (history, item) => upsertWeeklyVolumeSnapshot(history, Number(item.week), item.volume || {}),
+      []
+    );
+  if (!normalized.length) {
+    return upsertWeeklyVolumeSnapshot([], currentWeek, meso?.weeklyVolume || {});
+  }
+  return normalized.some((item) => item.week === currentWeek)
+    ? normalized
+    : upsertWeeklyVolumeSnapshot(normalized, currentWeek, meso?.weeklyVolume || {});
+}
+
+function summarizeWeekForMuscle(meso, week, muscle) {
+  const sessions = (meso?.sessions || []).filter(
+    (session) => session.week === week && !session.synthetic && session?.log?.[muscle]?.length
+  );
+  if (!sessions.length) return null;
+
+  let completionRatioTotal = 0;
+  let completionCount = 0;
+  let pumpTotal = 0;
+  let pumpCount = 0;
+  let sorenessTotal = 0;
+  let sorenessCount = 0;
+  let performanceTotal = 0;
+  let performanceCount = 0;
+
+  sessions.forEach((session) => {
+    const completion = getMuscleCompletionStats(session, muscle);
+    if (completion.plannedSets > 0) {
+      completionRatioTotal += completion.completionRatio;
+      completionCount += 1;
+    }
+    const feedback = session.feedback?.[muscle];
+    if (!feedback) return;
+    if (feedback.pump !== undefined) {
+      pumpTotal += feedback.pump;
+      pumpCount += 1;
+    }
+    if (feedback.soreness !== undefined) {
+      sorenessTotal += feedback.soreness;
+      sorenessCount += 1;
+    }
+    if (feedback.performance !== undefined) {
+      performanceTotal += feedback.performance;
+      performanceCount += 1;
+    }
   });
-  return nextVolume;
+
+  return {
+    exposures: sessions.length,
+    avgCompletionRatio: completionCount ? completionRatioTotal / completionCount : 1,
+    avgPump: pumpCount ? pumpTotal / pumpCount : null,
+    avgSoreness: sorenessCount ? sorenessTotal / sorenessCount : null,
+    avgPerformance: performanceCount ? performanceTotal / performanceCount : null,
+  };
+}
+
+function planNextWeeklyVolume(meso, completedWeek) {
+  const nextVolume = cloneWeeklyVolume(meso?.weeklyVolume || {});
+  const decisions = {};
+
+  MUSCLES.forEach((muscle) => {
+    const current = nextVolume[muscle];
+    const [mev, mrv] = MEV_MRV[muscle];
+    const summary = summarizeWeekForMuscle(meso, completedWeek, muscle);
+
+    if (!summary) {
+      decisions[muscle] = {
+        from: current,
+        to: current,
+        delta: 0,
+        action: "hold",
+        reason: "No direct work for this muscle was logged this week.",
+      };
+      return;
+    }
+
+    let delta = 0;
+    let action = "hold";
+    let reason = "Hold volume steady and drive progression through load, reps, and cleaner RIR execution first.";
+
+    if (summary.avgCompletionRatio < 0.65) {
+      delta = -1;
+      action = "reduce";
+      reason = "Too much programmed work was skipped. Tighten the weekly dose before adding more.";
+    } else if (
+      (summary.avgSoreness ?? 0) >= 2.5 ||
+      (summary.avgPerformance != null && summary.avgPerformance <= 0.75)
+    ) {
+      delta = -1;
+      action = "reduce";
+      reason = "Recovery cost was too high for the current dose, so next week should be slightly tighter.";
+    } else if (
+      (summary.avgPump ?? 2) <= 1.25 &&
+      (summary.avgSoreness ?? 1) <= 1.25 &&
+      summary.avgCompletionRatio >= 0.9 &&
+      (summary.avgPerformance == null || summary.avgPerformance >= 1.5)
+    ) {
+      delta = 1;
+      action = "add";
+      reason = "Stimulus looked a little too easy while recovery stayed good, so one extra set is justified next week.";
+    }
+
+    const next = clamp(current + delta, mev, mrv);
+    decisions[muscle] = {
+      from: current,
+      to: next,
+      delta: next - current,
+      action: next === current ? "hold" : next > current ? "add" : "reduce",
+      reason:
+        next === current && delta !== 0
+          ? "The muscle is already sitting at its current floor or ceiling, so volume stays put."
+          : reason,
+    };
+    nextVolume[muscle] = next;
+  });
+
+  return {
+    nextVolume,
+    review: {
+      evaluatedWeek: completedWeek,
+      nextWeek: completedWeek + 1,
+      decisions,
+    },
+  };
 }
 
 function normalizeExercisesAndIncrements(exercises, increments) {
@@ -1360,6 +1489,35 @@ function getMesoSummaryStats(meso) {
     topMovers: trends.slice(0, 3),
     strongest: upward[0] || trends[0] || null,
   };
+}
+
+function getVolumeHistoryRows(meso, muscles) {
+  const history = ensureWeeklyVolumeHistory(meso)
+    .filter((item) => item.week <= Math.max(1, meso?.totalWeeks || 1))
+    .sort((a, b) => a.week - b.week);
+  return (muscles || []).map((muscle) => ({
+    muscle,
+    weeks: history.map((snapshot) => ({
+      week: snapshot.week,
+      value: Number(snapshot.volume?.[muscle]) || MEV_MRV[muscle][0],
+    })),
+  }));
+}
+
+function getLatestVolumeDecisionRows(meso, muscles) {
+  const decisions = meso?.latestVolumeReview?.decisions || {};
+  return (muscles || [])
+    .map((muscle) => ({
+      muscle,
+      ...(decisions[muscle] || {
+        from: meso?.weeklyVolume?.[muscle] || MEV_MRV[muscle][0],
+        to: meso?.weeklyVolume?.[muscle] || MEV_MRV[muscle][0],
+        delta: 0,
+        action: "hold",
+        reason: "Volume has not been reviewed yet.",
+      }),
+    }))
+    .filter((item) => item.action !== "hold" || item.reason !== "Volume has not been reviewed yet.");
 }
 
 function getPhaseGuide(meso) {
@@ -1798,7 +1956,13 @@ function App() {
         const needsPlanningUpdate =
           plannedMeso.sessionLengthPreference !== activeMeso.sessionLengthPreference ||
           JSON.stringify(plannedMeso.exerciseAssignments || {}) !==
-            JSON.stringify(activeMeso.exerciseAssignments || {});
+            JSON.stringify(activeMeso.exerciseAssignments || {}) ||
+          JSON.stringify(plannedMeso.weeklyVolumeHistory || []) !==
+            JSON.stringify(activeMeso.weeklyVolumeHistory || []) ||
+          JSON.stringify(plannedMeso.volumeReviewHistory || []) !==
+            JSON.stringify(activeMeso.volumeReviewHistory || []) ||
+          JSON.stringify(plannedMeso.latestVolumeReview || null) !==
+            JSON.stringify(activeMeso.latestVolumeReview || null);
         if (needsPlanningUpdate) {
           activeMeso = await pushRemoteMeso(supabaseClient, cloudUser.id, plannedMeso, "active");
         }
@@ -2108,11 +2272,12 @@ function App() {
 
   const saveSession = useCallback(async () => {
     if (!meso || !sessionState) return;
+    const currentWeek = meso.week;
     const sessionRecord = {
       daySlotId: sessionState.daySlotId,
       dayLabel: sessionState.dayLabel,
       dayType: sessionState.dayLabel,
-      week: meso.week,
+      week: currentWeek,
       date: new Date().toISOString(),
       log: sessionState.log,
       feedback: sessionState.feedback,
@@ -2121,9 +2286,39 @@ function App() {
     let nextMeso = {
       ...meso,
       sessions: [...meso.sessions, sessionRecord],
-      weeklyVolume: applyVolumeProgression(meso, sessionState),
     };
-    nextMeso = advanceWeekIfNeeded(nextMeso);
+    let nextVolume = cloneWeeklyVolume(meso.weeklyVolume);
+    let weeklyVolumeHistory = ensureWeeklyVolumeHistory(meso);
+    let volumeReviewHistory = Array.isArray(meso.volumeReviewHistory) ? [...meso.volumeReviewHistory] : [];
+    let latestVolumeReview = meso.latestVolumeReview || null;
+    const weekComplete =
+      getWeekDoneDaySlotIds(nextMeso, currentWeek).length === getMesoDaySlots(nextMeso).length;
+
+    if (weekComplete) {
+      const nextWeek = Math.min(currentWeek + 1, meso.totalWeeks + 1);
+      weeklyVolumeHistory = upsertWeeklyVolumeSnapshot(weeklyVolumeHistory, currentWeek, meso.weeklyVolume);
+      if (nextWeek <= meso.totalWeeks) {
+        const volumePlan = planNextWeeklyVolume(nextMeso, currentWeek);
+        nextVolume = volumePlan.nextVolume;
+        weeklyVolumeHistory = upsertWeeklyVolumeSnapshot(weeklyVolumeHistory, nextWeek, nextVolume);
+        latestVolumeReview = volumePlan.review;
+        volumeReviewHistory = [
+          ...volumeReviewHistory.filter((item) => item?.evaluatedWeek !== currentWeek),
+          volumePlan.review,
+        ];
+      }
+      nextMeso = {
+        ...nextMeso,
+        week: nextWeek,
+      };
+    }
+    nextMeso = {
+      ...nextMeso,
+      weeklyVolume: nextVolume,
+      weeklyVolumeHistory,
+      volumeReviewHistory,
+      latestVolumeReview,
+    };
     if (nextMeso.week > nextMeso.totalWeeks && !nextMeso.completedAt) {
       nextMeso = { ...nextMeso, completedAt: new Date().toISOString() };
     }
@@ -3082,6 +3277,9 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
         exerciseAssignments: exerciseAssignmentsDraft,
       }),
       weeklyVolume: weeklyVol,
+      weeklyVolumeHistory: upsertWeeklyVolumeSnapshot([], 1, weeklyVol),
+      volumeReviewHistory: [],
+      latestVolumeReview: null,
       increments: normalizedIncrements,
       exerciseTracking,
       basedOnMesoId: initialTemplate?.remoteId || initialTemplate?.id || null,
@@ -3132,6 +3330,13 @@ function SetupScreen({ initialTemplate, onComplete, onCancel }) {
         exerciseAssignments: exerciseAssignmentsDraft,
       }),
       weeklyVolume: calcVolumeForWeek(resumeWeek, weeks),
+      weeklyVolumeHistory: upsertWeeklyVolumeSnapshot(
+        [],
+        resumeWeek,
+        calcVolumeForWeek(resumeWeek, weeks)
+      ),
+      volumeReviewHistory: [],
+      latestVolumeReview: null,
       increments: normalizedIncrements,
       exerciseTracking,
       resumed: true,
@@ -3775,6 +3980,18 @@ function HomeScreen({
   const recoveryPreview = (recoveryOverview.items || []).filter((item) => item.label !== "Awaiting feedback");
   const showRecoveryEmptyState = recoveryPreview.length === 0;
   const unitLabel = getUnitLabel(meso?.unit);
+  const volumeHistoryRows = getVolumeHistoryRows(meso, activeMuscles);
+  const trackedVolumeWeeksRaw = Array.from(
+    new Set(volumeHistoryRows.flatMap((row) => row.weeks.map((item) => item.week)))
+  ).sort((a, b) => a - b);
+  const trackedVolumeWeeks = trackedVolumeWeeksRaw.length
+    ? trackedVolumeWeeksRaw
+    : [Math.min(meso.week, meso.totalWeeks)];
+  const latestVolumeDecisionRows = getLatestVolumeDecisionRows(meso, activeMuscles).filter(
+    (item) => item.delta !== 0
+  );
+  const currentDisplayWeek = Math.min(meso.week, meso.totalWeeks);
+  const volumeWeekGridTemplate = `96px repeat(${Math.max(trackedVolumeWeeks.length, 1)}, minmax(48px, 1fr))`;
   return (
     <div className="stack">
       <div className="sticky">
@@ -4056,12 +4273,12 @@ function HomeScreen({
               <div className="assignment-day-card stack">
                 <div className="label tiny accent">3. Grow Volume Carefully</div>
                 <div className="small">
-                  Great recovery and low soreness let weekly sets climb. Missed work, poor recovery, or heavy soreness slow that ramp so progress stays sustainable.
+                  Volume is reviewed only after the full week is complete, and most muscles should hold steady. Sets only move by one when the week clearly says the current dose is too low or too costly.
                 </div>
               </div>
             </div>
             <div className="tiny muted">
-              The goal is repeatable progress, not random heroic sets. Beat the plan cleanly and the app gives you more. Struggle early and it protects the next week.
+              The default is: hold sets, beat reps or load, and earn volume only when recovery is good but the stimulus still looks too low.
             </div>
           </div>
 
@@ -4129,8 +4346,90 @@ function HomeScreen({
 
           <div className="card stack section-card">
             <div className="title-row">
+              <div>
+                <div className="display" style={{ fontSize: 38 }}>
+                  Volume By Week
+                </div>
+                <div className="mono tiny muted">
+                  weekly set targets only change at week boundaries, not after every session
+                </div>
+              </div>
+            </div>
+            <div className="volume-week-table-wrap">
+              <div className="volume-week-table">
+                <div className="volume-week-row volume-week-header" style={{ gridTemplateColumns: volumeWeekGridTemplate }}>
+                  <div className="volume-week-muscle">Muscle</div>
+                  {trackedVolumeWeeks.map((week) => (
+                    <div
+                      key={`week-head-${week}`}
+                      className={`volume-week-cell ${week === currentDisplayWeek ? "current" : ""}`}
+                    >
+                      W{week}
+                    </div>
+                  ))}
+                </div>
+                {volumeHistoryRows.map((row) => (
+                  <div
+                    key={`volume-row-${row.muscle}`}
+                    className="volume-week-row"
+                    style={{ gridTemplateColumns: volumeWeekGridTemplate }}
+                  >
+                    <div className="volume-week-muscle">{row.muscle}</div>
+                    {trackedVolumeWeeks.map((week) => {
+                      const item = row.weeks.find((entry) => entry.week === week);
+                      const previous = row.weeks.find((entry) => entry.week === week - 1);
+                      const delta = item && previous ? item.value - previous.value : null;
+                      return (
+                        <div
+                          key={`${row.muscle}-week-${week}`}
+                          className={`volume-week-cell ${week === currentDisplayWeek ? "current" : ""}`}
+                        >
+                          <div>{item ? item.value : "—"}</div>
+                          {delta != null && delta !== 0 ? (
+                            <div className={`volume-week-delta ${delta > 0 ? "up" : "down"}`}>
+                              {delta > 0 ? "+" : ""}
+                              {delta}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {meso.latestVolumeReview ? (
+              <div className="notice" style={{ padding: 12 }}>
+                <div className="label tiny gold" style={{ marginBottom: 6 }}>
+                  Latest Review
+                </div>
+                <div className="small">
+                  Week {meso.latestVolumeReview.evaluatedWeek} was reviewed to set Week{" "}
+                  {Math.min(meso.latestVolumeReview.nextWeek, meso.totalWeeks)} volume.
+                </div>
+                <div className="tiny muted">
+                  {latestVolumeDecisionRows.length
+                    ? latestVolumeDecisionRows
+                        .slice(0, 4)
+                        .map(
+                          (item) =>
+                            `${item.muscle} ${item.delta > 0 ? `+${item.delta}` : item.delta}`
+                        )
+                        .join(" · ")
+                    : "No muscles needed a volume change, so the plan held steady."}
+                </div>
+              </div>
+            ) : (
+              <div className="tiny muted">
+                The first volume review appears after your first full week is completed.
+              </div>
+            )}
+          </div>
+
+          <div className="card stack section-card">
+            <div className="title-row">
               <div className="display" style={{ fontSize: 38 }}>
-                Volume
+                Current Volume
               </div>
               <div className="mono tiny gold">sets / week</div>
             </div>
